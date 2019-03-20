@@ -269,15 +269,15 @@ ghcPrimExports
    [ availTC n [n] []
    | tc <- exposedPrimTyCons, let n = tyConName tc  ]
 
-ghcPrimDeclDocs :: DeclDocMap
-ghcPrimDeclDocs = DeclDocMap $ Map.fromList $ mapMaybe findName primOpDocs
+ghcPrimDeclDocs :: Docs
+ghcPrimDeclDocs = emptyDocs { docs_decls = Map.fromList $ mapMaybe findName primOpDocs }
   where
     names = map idName ghcPrimIds ++
             map (idName . primOpId) allThePrimOps ++
             map tyConName exposedPrimTyCons
     findName (nameStr, doc)
       | Just name <- find ((nameStr ==) . getOccString) names
-      = Just (name, mkHsDocString doc)
+      = Just (name, [WithHsDocIdentifiers (mkGeneratedHsDocString doc) []])
       | otherwise = Nothing
 
 {-

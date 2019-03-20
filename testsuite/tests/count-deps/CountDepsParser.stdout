@@ -1,4 +1,4 @@
-Found 282 GHC.Parser module dependencies
+Found 285 GHC.Parser module dependencies
 GHC.Builtin.Names
 GHC.Builtin.PrimOps
 GHC.Builtin.Types
@@ -106,6 +106,7 @@ GHC.Hs
 GHC.Hs.Binds
 GHC.Hs.Decls
 GHC.Hs.Doc
+GHC.Hs.DocString
 GHC.Hs.Expr
 GHC.Hs.Extension
 GHC.Hs.ImpExp
@@ -130,6 +131,7 @@ GHC.Parser.CharClass
 GHC.Parser.Errors.Basic
 GHC.Parser.Errors.Ppr
 GHC.Parser.Errors.Types
+GHC.Parser.HaddockLex
 GHC.Parser.Lexer
 GHC.Parser.PostProcess
 GHC.Parser.PostProcess.Haddock

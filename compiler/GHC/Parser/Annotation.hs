@@ -93,6 +93,7 @@ import Data.Semigroup
 import GHC.Data.FastString
 import GHC.Types.Name
 import GHC.Types.SrcLoc
+import GHC.Hs.DocString
 import GHC.Utils.Binary
 import GHC.Utils.Outputable hiding ( (<>) )
 import GHC.Utils.Panic
@@ -362,10 +363,7 @@ data EpaComment =
 
 data EpaCommentTok =
   -- Documentation annotations
-    EpaDocCommentNext  String     -- ^ something beginning '-- |'
-  | EpaDocCommentPrev  String     -- ^ something beginning '-- ^'
-  | EpaDocCommentNamed String     -- ^ something beginning '-- $'
-  | EpaDocSection      Int String -- ^ a section heading
+    EpaDocComment      HsDocString -- ^ a docstring that can be pretty printed using pprHsDocString
   | EpaDocOptions      String     -- ^ doc options (prune, ignore-exports, etc)
   | EpaLineComment     String     -- ^ comment starting by "--"
   | EpaBlockComment    String     -- ^ comment in {- -}

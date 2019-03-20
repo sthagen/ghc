@@ -1,4 +1,4 @@
-Found 276 Language.Haskell.Syntax module dependencies
+Found 277 Language.Haskell.Syntax module dependencies
 GHC.Builtin.Names
 GHC.Builtin.PrimOps
 GHC.Builtin.Types
@@ -105,6 +105,7 @@ GHC.Hs
 GHC.Hs.Binds
 GHC.Hs.Decls
 GHC.Hs.Doc
+GHC.Hs.DocString
 GHC.Hs.Expr
 GHC.Hs.Extension
 GHC.Hs.ImpExp

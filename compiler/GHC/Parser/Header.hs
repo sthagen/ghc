@@ -1,4 +1,3 @@
-
 {-# LANGUAGE TypeFamilies #-}
 
 -----------------------------------------------------------------------------
@@ -300,13 +299,10 @@ getOptions' opts toks
           isComment :: Token -> Bool
           isComment c =
             case c of
-              (ITlineComment {})     -> True
-              (ITblockComment {})    -> True
-              (ITdocCommentNext {})  -> True
-              (ITdocCommentPrev {})  -> True
-              (ITdocCommentNamed {}) -> True
-              (ITdocSection {})      -> True
-              _                      -> False
+              (ITlineComment {})  -> True
+              (ITblockComment {}) -> True
+              (ITdocComment {})   -> True
+              _                   -> False
 
 toArgs :: RealSrcLoc
        -> String -> Either String   -- Error

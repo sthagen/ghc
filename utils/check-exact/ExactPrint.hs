@@ -720,7 +720,7 @@ instance ExactPrint ModuleName where
 
 -- ---------------------------------------------------------------------
 
-instance ExactPrint (LocatedP WarningTxt) where
+instance ExactPrint (LocatedP (WarningTxt GhcPs)) where
   getAnnotationEntry = entryFromLocatedA
   exact (L (SrcSpanAnn an _) (WarningTxt (L _ src) ws)) = do
     markAnnOpenP an src "{-# WARNING"
@@ -787,7 +787,11 @@ instance ExactPrint (ImportDecl GhcPs) where
 
 instance ExactPrint HsDocString where
   getAnnotationEntry _ = NoEntryVal
-  exact = withPpr -- TODO:AZ use annotations
+  exact = printStringAdvance . exactPrintHsDocString
+
+instance ExactPrint a => ExactPrint (WithHsDocIdentifiers a GhcPs) where
+  getAnnotationEntry _ = NoEntryVal
+  exact = exact . hsDocString
 
 -- ---------------------------------------------------------------------
 
@@ -1078,18 +1082,14 @@ instance ExactPrint (SpliceDecl GhcPs) where
 
 -- ---------------------------------------------------------------------
 
-instance ExactPrint DocDecl where
+instance ExactPrint (DocDecl GhcPs) where
   getAnnotationEntry = const NoEntryVal
 
-  exact v =
-    let str =
-          case v of
-            (DocCommentNext ds)     -> unpackHDS ds
-            (DocCommentPrev ds)     -> unpackHDS ds
-            (DocCommentNamed _s ds) -> unpackHDS ds
-            (DocGroup _i ds)        -> unpackHDS ds
-    in
-      printStringAdvance str
+  exact v = case v of
+    (DocCommentNext ds)     -> exact ds
+    (DocCommentPrev ds)     -> exact ds
+    (DocCommentNamed _s ds) -> exact ds
+    (DocGroup _i ds)        -> exact ds
 
 -- ---------------------------------------------------------------------
 
