@@ -530,9 +530,11 @@ data TcRnMessage where
      Test cases: partial-sig/should_fail/T14479
   -}
   TcRnPartialTypeSigBadQuantifier
-    :: Name -- ^ type variable being quantified
-    -> Name -- ^ function name
-    -> LHsSigWcType GhcRn -> TcRnMessage
+    :: Name   -- ^ user-written name of type variable being quantified
+    -> Name   -- ^ function name
+    -> Maybe Type   -- ^ type the variable unified with, if known
+    -> LHsSigWcType GhcRn  -- ^ partial type signature
+    -> TcRnMessage
 
   {-| TcRnPolymorphicBinderMissingSig is a warning controlled by -Wmissing-local-signatures
       that occurs when a local polymorphic binding lacks a type signature.

@@ -174,11 +174,18 @@ instance Diagnostic TcRnMessage where
                    <+> text "with" <+> quotes (ppr n2))
                 2 (hang (text "both bound by the partial type signature:")
                         2 (ppr fn_name <+> dcolon <+> ppr hs_ty))
-    TcRnPartialTypeSigBadQuantifier n fn_name hs_ty
+    TcRnPartialTypeSigBadQuantifier n fn_name m_unif_ty hs_ty
       -> mkSimpleDecorated $
            hang (text "Can't quantify over" <+> quotes (ppr n))
-                2 (hang (text "bound by the partial type signature:")
-                        2 (ppr fn_name <+> dcolon <+> ppr hs_ty))
+                2 (vcat [ hang (text "bound by the partial type signature:")
+                             2 (ppr fn_name <+> dcolon <+> ppr hs_ty)
+                        , extra ])
+      where
+        extra | Just rhs_ty <- m_unif_ty
+              = sep [ quotes (ppr n), text "should really be", quotes (ppr rhs_ty) ]
+              | otherwise
+              = empty
+
     TcRnPolymorphicBinderMissingSig n ty
       -> mkSimpleDecorated $
            sep [ text "Polymorphic local binding with no type signature:"

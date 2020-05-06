@@ -15,6 +15,7 @@ import GHC.Hs
 import GHC.Tc.Types
 import GHC.Tc.Utils.Monad
 import GHC.Tc.Solver
+import GHC.Tc.Solver.Monad ( runTcS )
 import GHC.Tc.Types.Constraint
 import GHC.Core.Predicate
 import GHC.Tc.Types.Origin
@@ -402,7 +403,8 @@ simplifyRule name tc_lvl lhs_wanted rhs_wanted
        ; lhs_clone <- cloneWC lhs_wanted
        ; rhs_clone <- cloneWC rhs_wanted
        ; setTcLevel tc_lvl $
-         runTcSDeriveds    $
+         discardResult     $
+         runTcS            $
          do { _ <- solveWanteds lhs_clone
             ; _ <- solveWanteds rhs_clone
                   -- Why do them separately?

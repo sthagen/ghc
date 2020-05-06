@@ -488,9 +488,7 @@ newConcretePrimWanted loc ty
              CtWanted
                { ctev_dest = HoleDest hole
                , ctev_pred = mkTyConApp concretePrimTyCon [ki, ty]
-               , ctev_nosh = WOnly -- WOnly, because Derived Concrete# constraints
-                                   -- aren't useful: solving a Concrete# constraint
-                                   -- can't cause any unification to take place.
+               , ctev_rewriters = emptyRewriterSet
                , ctev_loc  = loc
                }
         ; return (hole, wantedCtEv) }

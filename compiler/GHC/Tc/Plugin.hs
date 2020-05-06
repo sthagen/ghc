@@ -41,7 +41,6 @@ module GHC.Tc.Plugin (
 
         -- * Creating constraints
         newWanted,
-        newDerived,
         newGiven,
         newCoercionHole,
 
@@ -173,10 +172,6 @@ zonkCt = unsafeTcPluginTcM . TcM.zonkCt
 newWanted :: CtLoc -> PredType -> TcPluginM CtEvidence
 newWanted loc pty
   = unsafeTcPluginTcM (TcM.newWanted (ctLocOrigin loc) Nothing pty)
-
--- | Create a new derived constraint.
-newDerived :: CtLoc -> PredType -> TcPluginM CtEvidence
-newDerived loc pty = return CtDerived { ctev_pred = pty, ctev_loc = loc }
 
 -- | Create a new given constraint, with the supplied evidence.
 --

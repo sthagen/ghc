@@ -1,6 +1,4 @@
 
-{-# LANGUAGE LambdaCase #-}
-
 {-# OPTIONS_GHC -Wno-incomplete-record-updates #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns   #-}
 
@@ -18,7 +16,8 @@ module GHC.Tc.Types.Origin (
   -- CtOrigin
   CtOrigin(..), exprCtOrigin, lexprCtOrigin, matchesCtOrigin, grhssCtOrigin,
   isVisibleOrigin, toInvisibleOrigin,
-  pprCtOrigin, isGivenOrigin,
+  pprCtOrigin, isGivenOrigin, isWantedWantedFunDepOrigin,
+  isWantedSuperclassOrigin,
 
   -- CtOrigin and CallStack
   isPushCallStackOrigin, callStackOriginFS,
@@ -428,6 +427,8 @@ data CtOrigin
   | ArithSeqOrigin (ArithSeqInfo GhcRn) -- [x..], [x..y] etc
   | AssocFamPatOrigin   -- When matching the patterns of an associated
                         -- family instance with that of its parent class
+                        -- IMPORTANT: These constraints will never cause errors;
+                        -- See Note [Constraints to ignore] in GHC.Tc.Errors
   | SectionOrigin
   | HasFieldOrigin FastString
   | TupleOrigin         -- (..,..)
@@ -486,7 +487,7 @@ data CtOrigin
         -- We only need a CtOrigin on the first, because the location
         -- is pinned on the entire error message
 
-  | ExprHoleOrigin OccName   -- from an expression hole
+  | ExprHoleOrigin (Maybe OccName)   -- from an expression hole
   | TypeHoleOrigin OccName   -- from a type hole (partial type signature)
   | PatCheckOrigin      -- normalisation of a type during pattern-match checking
   | ListOrigin          -- An overloaded list
@@ -494,9 +495,8 @@ data CtOrigin
   | BracketOrigin       -- An overloaded quotation bracket
   | StaticOrigin        -- A static form
   | Shouldn'tHappenOrigin String
-                            -- the user should never see this one,
-                            -- unless ImpredicativeTypes is on, where all
-                            -- bets are off
+                            -- the user should never see this one
+  | GhcBug20076             -- see #20076
 
   -- | Testing whether the constraint associated with an instance declaration
   -- in a signature file is satisfied upon instantiation.
@@ -516,6 +516,17 @@ data CtOrigin
       !Type -- ^ The type being checked for representation polymorphism.
             -- We record it here for access in 'GHC.Tc.Errors.mkFRRErr'.
       !FRROrigin
+
+  | WantedSuperclassOrigin PredType CtOrigin
+        -- From expanding out the superclasses of a Wanted; the PredType
+        -- is the subclass predicate, and the origin
+        -- of the original Wanted is the CtOrigin
+
+  | InstanceSigOrigin   -- from the sub-type check of an InstanceSig
+      Name   -- the method name
+      Type   -- the instance-sig type
+      Type   -- the instantiated type of the method
+  | AmbiguityCheckOrigin UserTypeCtxt
 
 -- | The number of superclass selections needed to get this Given.
 -- If @d :: C ty@   has @ScDepth=2@, then the evidence @d@ will look
@@ -545,6 +556,18 @@ isGivenOrigin (FunDepOrigin1 _ o1 _ _ o2 _) = isGivenOrigin o1 && isGivenOrigin 
 isGivenOrigin (FunDepOrigin2 _ o1 _ _)      = isGivenOrigin o1
 isGivenOrigin (CycleBreakerOrigin o)        = isGivenOrigin o
 isGivenOrigin _                             = False
+
+-- See Note [Suppressing confusing errors] in GHC.Tc.Errors
+isWantedWantedFunDepOrigin :: CtOrigin -> Bool
+isWantedWantedFunDepOrigin (FunDepOrigin1 _ orig1 _ _ orig2 _)
+  = not (isGivenOrigin orig1) && not (isGivenOrigin orig2)
+isWantedWantedFunDepOrigin _ = False
+
+-- | Did a constraint arise from expanding a Wanted constraint
+-- to look at superclasses?
+isWantedSuperclassOrigin :: CtOrigin -> Bool
+isWantedSuperclassOrigin (WantedSuperclassOrigin {}) = True
+isWantedSuperclassOrigin _                           = False
 
 instance Outputable CtOrigin where
   ppr = pprCtOrigin
@@ -617,7 +640,6 @@ lGRHSCtOrigin _ = Shouldn'tHappenOrigin "multi-way GRHS"
 
 pprCtOrigin :: CtOrigin -> SDoc
 -- "arising from ..."
--- Not an instance of Outputable because of the "arising from" prefix
 pprCtOrigin (GivenOrigin sk)     = ctoHerald <+> ppr sk
 pprCtOrigin (InstSCOrigin {})    = ctoHerald <+> pprSkolInfo InstSkol   -- keep output in sync
 pprCtOrigin (OtherSCOrigin _ si) = ctoHerald <+> pprSkolInfo si
@@ -673,13 +695,18 @@ pprCtOrigin (MCompPatOrigin pat)
            , text "in a statement in a monad comprehension" ]
 
 pprCtOrigin (Shouldn'tHappenOrigin note)
-  = sdocOption sdocImpredicativeTypes $ \case
-      True  -> text "a situation created by impredicative types"
-      False -> vcat [ text "<< This should not appear in error messages. If you see this"
-                    , text "in an error message, please report a bug mentioning"
-                        <+> quotes (text note) <+> text "at"
-                    , text "https://gitlab.haskell.org/ghc/ghc/wikis/report-a-bug >>"
-                    ]
+  = vcat [ text "<< This should not appear in error messages. If you see this"
+         , text "in an error message, please report a bug mentioning"
+             <+> quotes (text note) <+> text "at"
+         , text "https://gitlab.haskell.org/ghc/ghc/wikis/report-a-bug >>"
+         ]
+
+pprCtOrigin GhcBug20076
+  = vcat [ text "GHC Bug #20076 <https://gitlab.haskell.org/ghc/ghc/-/issues/20076>"
+         , text "Assuming you have a partial type signature, you can avoid this error"
+         , text "by either adding an extra-constraints wildcard (like `(..., _) => ...`,"
+         , text "with the underscore at the end of the constraint), or by avoiding the"
+         , text "use of a simplifiable constraint in your partial type signature." ]
 
 pprCtOrigin (ProvCtxtOrigin PSB{ psb_id = (L _ name) })
   = hang (ctoHerald <+> text "the \"provided\" constraints claimed by")
@@ -698,6 +725,22 @@ pprCtOrigin (FixedRuntimeRepOrigin _ frrOrig)
   -- to report all types that don't have a fixed runtime representation at once,
   -- in 'GHC.Tc.Errors.mkFRRErr'.
   = pprFRROrigin frrOrig
+
+pprCtOrigin (WantedSuperclassOrigin subclass_pred subclass_orig)
+  = sep [ ctoHerald <+> text "a superclass required to satisfy" <+> quotes (ppr subclass_pred) <> comma
+        , pprCtOrigin subclass_orig ]
+
+pprCtOrigin (InstanceSigOrigin method_name sig_type orig_method_type)
+  = vcat [ ctoHerald <+> text "the check that an instance signature is more general"
+         , text "than the type of the method (instantiated for this instance)"
+         , hang (text "instance signature:")
+              2 (ppr method_name <+> dcolon <+> ppr sig_type)
+         , hang (text "instantiated method type:")
+              2 (ppr orig_method_type) ]
+
+pprCtOrigin (AmbiguityCheckOrigin ctxt)
+  = ctoHerald <+> text "a type ambiguity check for" $$
+    pprUserTypeCtxt ctxt
 
 pprCtOrigin simple_origin
   = ctoHerald <+> pprCtO simple_origin
@@ -732,7 +775,8 @@ pprCtO MCompOrigin           = text "a statement in a monad comprehension"
 pprCtO ProcOrigin            = text "a proc expression"
 pprCtO ArrowCmdOrigin        = text "an arrow command"
 pprCtO AnnOrigin             = text "an annotation"
-pprCtO (ExprHoleOrigin occ)  = text "a use of" <+> quotes (ppr occ)
+pprCtO (ExprHoleOrigin Nothing)    = text "an expression hole"
+pprCtO (ExprHoleOrigin (Just occ)) = text "a use of" <+> quotes (ppr occ)
 pprCtO (TypeHoleOrigin occ)  = text "a use of wildcard" <+> quotes (ppr occ)
 pprCtO PatCheckOrigin        = text "a pattern-match completeness check"
 pprCtO ListOrigin            = text "an overloaded list"
@@ -762,6 +806,10 @@ pprCtO (ProvCtxtOrigin {})          = text "a provided constraint"
 pprCtO (InstProvidedOrigin {})      = text "a provided constraint"
 pprCtO (CycleBreakerOrigin orig)    = pprCtO orig
 pprCtO (FixedRuntimeRepOrigin {})   = text "a representation polymorphism check"
+pprCtO GhcBug20076                  = text "GHC Bug #20076"
+pprCtO (WantedSuperclassOrigin {})  = text "a superclass constraint"
+pprCtO (InstanceSigOrigin {})       = text "a type signature in an instance"
+pprCtO (AmbiguityCheckOrigin {})    = text "a type ambiguity check"
 
 {- *********************************************************************
 *                                                                      *

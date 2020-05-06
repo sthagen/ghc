@@ -455,7 +455,7 @@ delTidyEnvList (occ_env, var_env) vs = (occ_env', var_env')
 {-
 ************************************************************************
 *                                                                      *
-\subsection{@VarEnv@s}
+   VarEnv
 *                                                                      *
 ************************************************************************
 -}
@@ -564,7 +564,13 @@ modifyVarEnv_Directly mangle_fn env key
       Nothing -> env
       Just xx -> addToUFM_Directly env key (mangle_fn xx)
 
--- Deterministic VarEnv
+{-
+************************************************************************
+*                                                                      *
+   Deterministic VarEnv (DVarEnv)
+*                                                                      *
+************************************************************************
+-}
 -- See Note [Deterministic UniqFM] in GHC.Types.Unique.DFM for explanation why we need
 -- DVarEnv.
 

@@ -275,7 +275,7 @@ instance ContainsModule gbl => ContainsModule (Env gbl lcl) where
 -- (i.e. type family reductions and following filled-in metavariables)
 -- in the solver.
 data RewriteEnv
-  = FE { fe_loc     :: !CtLoc
+  = RE { re_loc     :: !CtLoc
        -- ^ In which context are we rewriting?
        --
        -- Type-checking plugins might want to use this location information
@@ -286,11 +286,12 @@ data RewriteEnv
 
        -- Within GHC, we use this field to keep track of reduction depth.
        -- See Note [Rewriter CtLoc] in GHC.Tc.Solver.Rewrite.
-       , fe_flavour :: !CtFlavour
-       , fe_eq_rel  :: !EqRel
+       , re_flavour :: !CtFlavour
+       , re_eq_rel  :: !EqRel
        -- ^ At what role are we rewriting?
        --
        -- See Note [Rewriter EqRels] in GHC.Tc.Solver.Rewrite
+       , re_rewriters :: !(TcRef RewriterSet)  -- ^ See Note [Rewriting wanteds]
        }
 -- RewriteEnv is mostly used in @GHC.Tc.Solver.Rewrite@, but it is defined
 -- here so that it can also be passed to rewriting plugins.
@@ -1654,7 +1655,6 @@ Constraint Solver Plugins
 -- indicating which Wanted constraints it could solve, or whether any are
 -- insoluble.
 type TcPluginSolver = [Ct] -- ^ Givens
-                   -> [Ct] -- ^ Deriveds
                    -> [Ct] -- ^ Wanteds
                    -> TcPluginM TcPluginSolveResult
 

@@ -3,6 +3,25 @@
 Version 9.4.1
 ==============
 
+Language
+~~~~~~~~
+
+- A small change has been made to the way GHC infers types for definitions
+  with no type signature: GHC will no longer generalize a function over
+  a type variable determined by a functional dependency. For example::
+
+    class C a b | a -> b where
+      op :: a -> b -> ()
+    f x = op True x
+
+  Previously, GHC inferred ``f :: C Bool b => b -> ()``. However, the functional
+  dependency says that only one type could ever be used for ``b``: this function
+  is hardly valid "for all" ``b``\ s. With the change, GHC will reject, looking
+  for the (non-existent) instance for ``C Bool b``.
+
+  If you want to retain the old behavior, add a (backward-compatible) type signature,
+  explicitly requesting this unusual quantification.
+
 Compiler
 ~~~~~~~~
 
