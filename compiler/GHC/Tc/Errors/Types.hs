@@ -701,17 +701,6 @@ data TcRnMessage where
   -}
   TcRnVDQInTermType :: !Type -> TcRnMessage
 
-  {-| TcRnIllegalEqualConstraints is an error that occurs whenever an illegal equational
-      constraint is specified.
-
-      Examples(s):
-        blah :: (forall a. a b ~ a c) => b -> c
-        blah = undefined
-
-      Test cases: typecheck/should_fail/T17563
-  -}
-  TcRnIllegalEqualConstraints :: !Type -> TcRnMessage
-
   {-| TcRnBadQuantPredHead is an error that occurs whenever a quantified predicate
       lacks a class or type variable head.
 

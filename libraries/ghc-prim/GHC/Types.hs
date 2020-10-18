@@ -34,7 +34,7 @@ module GHC.Types (
         SPEC(..),
         Symbol,
         Any,
-        type (~~), Coercible,
+        type (~), type (~~), Coercible,
         TYPE, Levity(..), RuntimeRep(..),
         LiftedRep, UnliftedRep,
         Type, UnliftedType, Constraint,
@@ -239,7 +239,6 @@ newtype IO a = IO (State# RealWorld -> (# State# RealWorld, a #))
 *                                                                      *
                     (~) and Coercible
 
-   NB: (~) is built-in syntax, and hence not explicitly exported
 *                                                                      *
 ********************************************************************* -}
 

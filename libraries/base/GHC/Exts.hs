@@ -105,6 +105,7 @@ module GHC.Exts
         unsafeCoerce#,
 
         -- * Equality
+        type (~),
         type (~~),
 
         -- * Representation polymorphism
