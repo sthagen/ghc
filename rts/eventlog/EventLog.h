@@ -17,11 +17,6 @@
 
 #if defined(TRACING)
 
-/*
- * Descriptions of EventTags for events.
- */
-extern char *EventTagDesc[];
-
 extern bool eventlog_enabled;
 
 void initEventLogging(void);
@@ -29,7 +24,6 @@ void restartEventLogging(void);
 void finishCapEventLogging(void);
 void freeEventLogging(void);
 void abortEventLogging(void); // #4512 - after fork child needs to abort
-void flushEventLog(void);     // event log inherited from parent
 void moreCapEventBufs (uint32_t to);
 void flushLocalEventsBuf(Capability *cap);
 void flushAllCapsEventsBufs(void);
