@@ -29,7 +29,8 @@ void restartEventLogging(void);
 void finishCapEventLogging(void);
 void freeEventLogging(void);
 void abortEventLogging(void); // #4512 - after fork child needs to abort
-void moreCapEventBufs (uint32_t from, uint32_t to);
+void flushEventLog(void);     // event log inherited from parent
+void moreCapEventBufs (uint32_t to);
 void flushLocalEventsBuf(Capability *cap);
 void flushAllCapsEventsBufs(void);
 void flushAllEventsBufs(Capability *cap);
