@@ -647,6 +647,7 @@ data DynFlags = DynFlags {
   -- See Note [Discounts and thresholds] in GHC.Core.Unfold
   unfoldingOpts         :: !UnfoldingOpts,
 
+  dmdAnalIterCheckPrefixes :: ![String],
   maxWorkerArgs         :: Int,
 
   ghciHistSize          :: Int,
@@ -1224,6 +1225,7 @@ defaultDynFlags mySettings llvmConfig =
         extensionFlags = flattenExtensionFlags Nothing [],
 
         unfoldingOpts = defaultUnfoldingOpts,
+        dmdAnalIterCheckPrefixes = [],
         maxWorkerArgs = 10,
 
         ghciHistSize = 50, -- keep a log of length 50 by default
@@ -2707,6 +2709,8 @@ dynamic_flags_deps = [
       (sepArg (\s d -> d { ruleCheck = Just s }))
   , make_ord_flag defFlag "dinline-check"
       (sepArg (\s d -> d { unfoldingOpts = updateReportPrefix (Just s) (unfoldingOpts d)}))
+  , make_ord_flag defFlag "ddmdanal-iter-check"
+      (sepArg (\s d -> d { dmdAnalIterCheckPrefixes = s : dmdAnalIterCheckPrefixes d }))
   , make_ord_flag defFlag "freduction-depth"
       (intSuffix (\n d -> d { reductionDepth = treatZeroAsInf n }))
   , make_ord_flag defFlag "fconstraint-solver-iterations"

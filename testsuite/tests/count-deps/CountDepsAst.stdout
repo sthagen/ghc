@@ -1,4 +1,4 @@
-Found 277 Language.Haskell.Syntax module dependencies
+Found 278 Language.Haskell.Syntax module dependencies
 GHC.Builtin.Names
 GHC.Builtin.PrimOps
 GHC.Builtin.Types
@@ -78,6 +78,7 @@ GHC.Data.List.SetOps
 GHC.Data.Maybe
 GHC.Data.OrdList
 GHC.Data.Pair
+GHC.Data.STuple
 GHC.Data.Stream
 GHC.Data.Strict
 GHC.Data.StringBuffer
