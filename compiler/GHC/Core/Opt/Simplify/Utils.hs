@@ -893,11 +893,10 @@ updModeForStableUnfoldings :: Activation -> SimplMode -> SimplMode
 -- See Note [Simplifying inside stable unfoldings]
 updModeForStableUnfoldings unf_act current_mode
   = current_mode { sm_phase      = phaseFromActivation unf_act
-                 , sm_inline     = True
-                 , sm_eta_expand = False }
-       -- sm_eta_expand: see Note [No eta expansion in stable unfoldings]
-       -- sm_rules: just inherit; sm_rules might be "off"
-       -- because of -fno-enable-rewrite-rules
+                 , sm_inline     = True }
+    -- sm_eta_expand: see Note [Eta-expansion flag inside stable unfoldings]
+    -- sm_rules: just inherit; sm_rules might be "off"
+    --           because of -fno-enable-rewrite-rules
   where
     phaseFromActivation (ActiveAfter _ n) = Phase n
     phaseFromActivation _                 = InitialPhase
@@ -938,24 +937,40 @@ postInlineUnconditionally substituted in a trivial expression that contains
 ticks. See Note [Tick annotations in RULE matching] in GHC.Core.Rules for
 details.
 
-Note [No eta expansion in stable unfoldings]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-If we have a stable unfolding
+Note [Eta-expansion flag inside stable unfoldings]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+We want the eta-expansion flag to be ON in a stable unfolding.  Else we can get
+    f = \x. ((\y. ...x...y...) |> co)
+
+Now, since the lambdas aren't together, the occurrence analyser will
+say that x is OnceInLam.  Now if we have a call
+    f e1 e2
+we'll end up with
+    let x = e1 in ...x..e2...
+and it'll take an extra iteration of the Simplifier to substitute for x.
+
+The thing that moves the cast out of the way is in 'mkLam' (below),
+but it is switched off if sm_eta_expand is off (see
+Note [Casts and lambdas]).
+
+Conclusion: leave sm_eta_expand ON in stable unfoldings
+
+Historical note. There was /previously/ a reason not to do eta expansion
+in stable unfoldings.  If we have a stable unfolding
 
   f :: Ord a => a -> IO ()
   -- Unfolding template
   --    = /\a \(d:Ord a) (x:a). bla
 
-we do not want to eta-expand to
+we previously did not want to eta-expand to
 
   f :: Ord a => a -> IO ()
   -- Unfolding template
   --    = (/\a \(d:Ord a) (x:a) (eta:State#). bla eta) |> co
 
-because not specialisation of the overloading doesn't work properly
-(see Note [Specialisation shape] in GHC.Core.Opt.Specialise), #9509.
+because not specialisation of the overloading didn't work properly (#9509).
+But now it does: see Note [Account for casts in binding] in GHC.Core.Opt.Specialise
 
-So we disable eta-expansion in stable unfoldings.
 
 Note [Inlining in gentle mode]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1568,15 +1583,6 @@ mkLam env bndrs body cont
        ; mkLam' dflags bndrs body }
   where
     mkLam' :: DynFlags -> [OutBndr] -> OutExpr -> SimplM OutExpr
-    mkLam' dflags bndrs (Cast body co)
-      | not (any bad bndrs)
-        -- Note [Casts and lambdas]
-      = do { lam <- mkLam' dflags bndrs body
-           ; return (mkCast lam (mkPiCos Representational bndrs co)) }
-      where
-        co_vars  = tyCoVarsOfCo co
-        bad bndr = isCoVar bndr && bndr `elemVarSet` co_vars
-
     mkLam' dflags bndrs body@(Lam {})
       = mkLam' dflags (bndrs ++ bndrs1) body1
       where
@@ -1585,6 +1591,16 @@ mkLam env bndrs body cont
     mkLam' dflags bndrs (Tick t expr)
       | tickishFloatable t
       = mkTick t <$> mkLam' dflags bndrs expr
+
+    mkLam' dflags bndrs (Cast body co)
+      | -- Note [Casts and lambdas]
+        sm_eta_expand (getMode env)
+      , not (any bad bndrs)
+      = do { lam <- mkLam' dflags bndrs body
+           ; return (mkCast lam (mkPiCos Representational bndrs co)) }
+      where
+        co_vars  = tyCoVarsOfCo co
+        bad bndr = isCoVar bndr && bndr `elemVarSet` co_vars
 
     mkLam' dflags bndrs body
       | gopt Opt_DoEtaReduction dflags
@@ -1631,7 +1647,7 @@ guard.
 NB: We check the SimplEnv (sm_eta_expand), not DynFlags.
     See Note [No eta expansion in stable unfoldings]
 
-Note [Casts and lambdas]
+Note [Casts and lambdas]o
 ~~~~~~~~~~~~~~~~~~~~~~~~
 Consider
         (\x. (\y. e) `cast` g1) `cast` g2
@@ -1649,19 +1665,32 @@ might meet and cancel with some other cast:
         /\g. e `cast` co  ===>   (/\g. e) `cast` (/\g. co)
                           (if not (g `in` co))
 
-Notice that it works regardless of 'e'.  Originally it worked only
-if 'e' was itself a lambda, but in some cases that resulted in
-fruitless iteration in the simplifier.  A good example was when
-compiling Text.ParserCombinators.ReadPrec, where we had a definition
-like    (\x. Get `cast` g)
-where Get is a constructor with nonzero arity.  Then mkLam eta-expanded
-the Get, and the next iteration eta-reduced it, and then eta-expanded
-it again.
+Wrinkles
 
-Note also the side condition for the case of coercion binders.
-It does not make sense to transform
-        /\g. e `cast` g  ==>  (/\g.e) `cast` (/\g.g)
-because the latter is not well-kinded.
+* We check sm_eta_expand, becuase this is a kind of eta-expansion.
+  The main reason is that on the LHS of a RULE we may have
+       (\x. blah |> CoVar cv)
+  where `cv` is a coercion variable.  We really only want coercion
+  variables, not general coercions, on the LHS of a RULE.  So we don't
+  want to swizzle this to
+      (\x. blah) |> (Refl xty `FunCo` CoVar cv)
+  And it happens that sm_eta_expand is off on RULE left hand sides;
+  see updModeForRules.
+
+* Notice that it works regardless of 'e'.  Originally it worked only
+  if 'e' was itself a lambda, but in some cases that resulted in
+  fruitless iteration in the simplifier.  A good example was when
+  compiling Text.ParserCombinators.ReadPrec, where we had a definition
+  like    (\x. Get `cast` g)
+  where Get is a constructor with nonzero arity.  Then mkLam eta-expanded
+  the Get, and the next iteration eta-reduced it, and then eta-expanded
+  it again.
+
+* Note also the side condition for the case of coercion binders, namel
+  not (any bad bndrs).  It does not make sense to transform
+          /\g. e `cast` g  ==>  (/\g.e) `cast` (/\g.g)
+  because the latter is not well-kinded.
+
 
 ************************************************************************
 *                                                                      *
