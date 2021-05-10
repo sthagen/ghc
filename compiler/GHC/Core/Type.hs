@@ -124,7 +124,7 @@ module GHC.Core.Type (
         isLiftedTypeKind, isUnliftedTypeKind, isBoxedTypeKind, pickyIsLiftedTypeKind,
         isLiftedRuntimeRep, isUnliftedRuntimeRep, isBoxedRuntimeRep,
         isLiftedLevity, isUnliftedLevity,
-        isUnliftedType, isBoxedType, mightBeUnliftedType, isUnboxedTupleType, isUnboxedSumType,
+        isUnliftedType, isBoxedType, mightBeUnliftedType, isUnboxedTupleType, isUnboxedSumType, isStateType,
         isAlgType, isDataFamilyAppType,
         isPrimitiveType, isStrictType,
         isLevityTy, isLevityVar,
@@ -319,6 +319,8 @@ import Control.Monad    ( guard )
 --                      There are also /unlifted/ data types.
 --
 -- [Primitive]          Iff it is a built-in type that can't be expressed in Haskell.
+--
+-- [Unlifted]           Anything that isn't lifted is considered unlifted.
 --
 -- Currently, all primitive types are unlifted, but that's not necessarily
 -- the case: for example, @Int@ could be primitive.
@@ -2288,6 +2290,7 @@ buildSynTyCon name binders res_kind roles rhs
 isLiftedType_maybe :: HasDebugCallStack => Type -> Maybe Bool
 isLiftedType_maybe ty = case coreFullView (getRuntimeRep ty) of
   ty' | isLiftedRuntimeRep ty'  -> Just True
+      | isUnliftedRuntimeRep ty' -> Just False
   TyConApp {}                   -> Just False  -- Everything else is unlifted
   _                             -> Nothing     -- representation-polymorphic
 
@@ -2304,6 +2307,13 @@ isUnliftedType :: HasDebugCallStack => Type -> Bool
 isUnliftedType ty
   = not (isLiftedType_maybe ty `orElse`
          pprPanic "isUnliftedType" (ppr ty <+> dcolon <+> ppr (typeKind ty)))
+
+-- | State token type.
+isStateType :: Type -> Bool
+isStateType ty
+  = case tyConAppTyCon_maybe ty of
+        Just tycon -> tycon == statePrimTyCon
+        _          -> False
 
 -- | Returns:
 --

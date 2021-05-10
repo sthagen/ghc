@@ -2431,9 +2431,13 @@ dynamic_flags_deps = [
         (setDumpFlag Opt_D_dump_stg_unarised)
   , make_ord_flag defGhcFlag "ddump-stg-final"
         (setDumpFlag Opt_D_dump_stg_final)
+  , make_ord_flag defGhcFlag "ddump-stg-cg"
+        (setDumpFlag Opt_D_dump_stg_cg)
   , make_dep_flag defGhcFlag "ddump-stg"
         (setDumpFlag Opt_D_dump_stg_from_core)
         "Use `-ddump-stg-from-core` or `-ddump-stg-final` instead"
+  , make_ord_flag defGhcFlag "ddump-stg-tags"
+        (setDumpFlag Opt_D_dump_stg_tags)
   , make_ord_flag defGhcFlag "ddump-call-arity"
         (setDumpFlag Opt_D_dump_call_arity)
   , make_ord_flag defGhcFlag "ddump-exitify"
@@ -2524,6 +2528,8 @@ dynamic_flags_deps = [
         (NoArg (setGeneralFlag Opt_DoAsmLinting))
   , make_ord_flag defGhcFlag "dannot-lint"
         (NoArg (setGeneralFlag Opt_DoAnnotationLinting))
+  , make_ord_flag defGhcFlag "dtag-inference-checks"
+        (NoArg (setGeneralFlag Opt_DoTagInferenceChecks))
   , make_ord_flag defGhcFlag "dshow-passes"
         (NoArg $ forceRecompile >> (setVerbosity $ Just 2))
   , make_ord_flag defGhcFlag "dfaststring-stats"
@@ -3369,6 +3375,7 @@ fFlagsDeps = [
   flagSpec "unbox-strict-fields"              Opt_UnboxStrictFields,
   flagSpec "version-macros"                   Opt_VersionMacros,
   flagSpec "worker-wrapper"                   Opt_WorkerWrapper,
+  flagSpec "worker-wrapper-cbv"               Opt_WorkerWrapperUnlift,
   flagSpec "solve-constant-dicts"             Opt_SolveConstantDicts,
   flagSpec "catch-bottoms"                    Opt_CatchBottoms,
   flagSpec "alignment-sanitisation"           Opt_AlignmentSanitisation,

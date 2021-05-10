@@ -20,8 +20,8 @@ import GHC.Prelude
 import GHC.Driver.Session
 
 import GHC.Core
-import GHC.Core.Utils   ( exprType, findDefault, isJoinBind
-                        , exprIsTickedString_maybe )
+import GHC.Core.Utils   ( exprType, isJoinBind
+                        , exprIsTickedString_maybe, findDefault )
 import GHC.Core.Opt.Arity   ( manifestArity )
 import GHC.Core.Type
 import GHC.Core.TyCon
@@ -29,6 +29,7 @@ import GHC.Core.DataCon
 
 import GHC.Stg.Syntax
 import GHC.Stg.Debug
+import GHC.Stg.Utils
 
 import GHC.Types.RepType
 import GHC.Types.Id.Make ( coercionTokenId )

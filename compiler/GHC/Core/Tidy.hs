@@ -10,17 +10,19 @@ The code for *top-level* bindings is in GHC.Iface.Tidy.
 
 {-# OPTIONS_GHC -Wno-incomplete-record-updates #-}
 module GHC.Core.Tidy (
-        tidyExpr, tidyRules, tidyUnfolding
+        tidyExpr, tidyRules, tidyUnfolding, tidyCbvInfoTop
     ) where
 
 import GHC.Prelude
 
 import GHC.Core
+import GHC.Core.Type
+
 import GHC.Core.Seq ( seqUnfolding )
+import GHC.Core.Utils ( computeCbvInfo )
 import GHC.Types.Id
 import GHC.Types.Id.Info
 import GHC.Types.Demand ( zapDmdEnvSig )
-import GHC.Core.Type     ( tidyType, tidyVarBndr )
 import GHC.Core.Coercion ( tidyCo )
 import GHC.Types.Var
 import GHC.Types.Var.Env
@@ -30,7 +32,9 @@ import GHC.Types.Name hiding (tidyNameOcc)
 import GHC.Types.SrcLoc
 import GHC.Types.Tickish
 import GHC.Data.Maybe
+import GHC.Utils.Misc
 import Data.List (mapAccumL)
+import GHC.Types.Name.Set
 
 {-
 ************************************************************************
@@ -45,17 +49,65 @@ tidyBind :: TidyEnv
          ->  (TidyEnv, CoreBind)
 
 tidyBind env (NonRec bndr rhs)
-  = tidyLetBndr env env bndr =: \ (env', bndr') ->
-    (env', NonRec bndr' (tidyExpr env' rhs))
+  = -- pprTrace "tidyBindNonRec" (ppr bndr) $
+    let cbv_bndr = (tidyCbvInfoLocal bndr rhs)
+        (env', bndr') = tidyLetBndr env env cbv_bndr
+        tidy_rhs = (tidyExpr env' rhs)
+    in (env', NonRec bndr' tidy_rhs)
 
 tidyBind env (Rec prs)
-  = let
-       (bndrs, rhss)  = unzip prs
-       (env', bndrs') = mapAccumL (tidyLetBndr env') env bndrs
+  = -- pprTrace "tidyBindRec" (ppr $ map fst prs) $
+    let
+       cbv_bndrs = map ((\(bnd,rhs) -> tidyCbvInfoLocal bnd rhs)) prs
+       (_bndrs, rhss)  = unzip prs
+       (env', bndrs') = mapAccumL (tidyLetBndr env') env cbv_bndrs
     in
     map (tidyExpr env') rhss =: \ rhss' ->
     (env', Rec (zip bndrs' rhss'))
 
+
+-- Note [Attaching CBV Marks to ids]
+-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+-- Before tidy, ids of function arguments which have a call-by-value semantics are identified
+-- and given an `OtherCon[]` unfolding. During tidy, we transform this information into CBV marks
+-- that are then associated with the function id itself.
+-- Then the code generator only has to query the CBV marks and doesn't need to query any unfolding.
+
+-- The actual logic is in tidyCbvInfo and takes:
+-- * The function id:
+-- * The functions rhs
+-- And gives us back the function annotated with the marks.
+-- We call it in:
+-- * tidyTopPair for top level bindings
+-- * tidyBind for local bindings.
+
+-- Not that we *have* to look at the untidied rhs.
+-- During tidying some knot-tying occurs which can blow up
+-- if we look at the types of the arguments, but here we dont:
+-- we only check if the manifest lambdas have OtherCon unfoldings
+-- and these remain valid post tidy.
+
+-- If the id is boot-exported we don't set a cbv calling convention via marks,
+-- as the boot file won't contain them. Which means code calling boot-exported
+-- ids might expect these ids to have a vanilla calling convention even if we
+-- determine a different one here.
+-- To be able to avoid this we pass a set of boot exported ids for this module around.
+-- For non top level ids we can skip this. Local ids are never boot-exported
+-- as boot files don't have unfoldings.
+-- See also Note [Strict Worker Ids]
+
+
+-- See Note [Attaching CBV Marks to ids]
+tidyCbvInfoTop :: HasDebugCallStack => NameSet -> Id -> CoreExpr -> Id
+tidyCbvInfoTop boot_exports id rhs
+  -- Can't change calling convention for boot exported things
+  | elemNameSet (idName id) boot_exports = id
+  | otherwise = computeCbvInfo id rhs
+
+-- See Note [Attaching CBV Marks to ids]
+tidyCbvInfoLocal :: HasDebugCallStack => Id -> CoreExpr -> Id
+tidyCbvInfoLocal id rhs
+  | otherwise = computeCbvInfo id rhs
 
 ------------  Expressions  --------------
 tidyExpr :: TidyEnv -> CoreExpr -> CoreExpr

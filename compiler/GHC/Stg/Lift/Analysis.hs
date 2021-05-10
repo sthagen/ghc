@@ -311,8 +311,8 @@ tagSkeletonBinding is_lne body_skel body_arg_occs (StgRec pairs)
         bndr' = BindsClosure bndr (bndr `elemVarSet` scope_occs)
 
 tagSkeletonRhs :: Id -> CgStgRhs -> (Skeleton, IdSet, LlStgRhs)
-tagSkeletonRhs _ (StgRhsCon ccs dc mn ts args)
-  = (NilSk, mkArgOccs args, StgRhsCon ccs dc mn ts args)
+tagSkeletonRhs _ (StgRhsCon ccs dc cn ticks args)
+  = (NilSk, mkArgOccs args, StgRhsCon ccs dc cn ticks args)
 tagSkeletonRhs bndr (StgRhsClosure fvs ccs upd bndrs body)
   = (rhs_skel, body_arg_occs, StgRhsClosure fvs ccs upd bndrs' body')
   where

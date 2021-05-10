@@ -114,17 +114,20 @@ module GHC.Types.Id (
         setIdDemandInfo,
         setIdDmdSig,
         setIdCprSig,
+        setIdCbvMarks,
+        idCbvMarks_maybe,
+        idCbvMarkArity,
 
         idDemandInfo,
         idDmdSig,
         idCprSig,
 
-    ) where
+    idTagSig_maybe,setIdTagSig) where
 
 import GHC.Prelude
 
 import GHC.Core ( CoreRule, isStableUnfolding, evaldUnfolding,
-                 isCompulsoryUnfolding, Unfolding( NoUnfolding ) )
+                 isCompulsoryUnfolding, Unfolding( NoUnfolding ), isEvaldUnfolding )
 
 import GHC.Types.Id.Info
 import GHC.Types.Basic
@@ -163,6 +166,7 @@ import GHC.Utils.Panic
 import GHC.Utils.Panic.Plain
 import GHC.Utils.GlobalVars
 import GHC.Utils.Trace
+import GHC.Stg.InferTags.TagSig
 
 -- infixl so you can say (id `set` a `set` b)
 infixl  1 `setIdUnfolding`,
@@ -181,7 +185,8 @@ infixl  1 `setIdUnfolding`,
           `setIdCprSig`,
 
           `asJoinId`,
-          `asJoinId_maybe`
+          `asJoinId_maybe`,
+          `setIdCbvMarks`
 
 {-
 ************************************************************************
@@ -258,6 +263,11 @@ modifyIdInfo fn id = setIdInfo id (fn (idInfo id))
 maybeModifyIdInfo :: Maybe IdInfo -> Id -> Id
 maybeModifyIdInfo (Just new_info) id = lazySetIdInfo id new_info
 maybeModifyIdInfo Nothing         id = id
+
+-- maybeModifyIdInfo tries to avoid unnecessary thrashing
+maybeModifyIdDetails :: Maybe IdDetails  -> Id -> Id
+maybeModifyIdDetails (Just new_details) id = setIdDetails id new_details
+maybeModifyIdDetails Nothing         id = id
 
 {-
 ************************************************************************
@@ -540,11 +550,12 @@ isJoinId id
                 _         -> False
   | otherwise = False
 
+-- | Doesn't return strictness marks
 isJoinId_maybe :: Var -> Maybe JoinArity
 isJoinId_maybe id
  | isId id  = assertPpr (isId id) (ppr id) $
               case Var.idDetails id of
-                JoinId arity -> Just arity
+                JoinId arity _marks -> Just arity
                 _            -> Nothing
  | otherwise = Nothing
 
@@ -608,10 +619,12 @@ asJoinId id arity = warnPprTrace (not (isLocalId id))
                          (text "global id being marked as join var:" <+> ppr id) $
                     warnPprTrace (not (is_vanilla_or_join id))
                          (ppr id <+> pprIdDetails (idDetails id)) $
-                    id `setIdDetails` JoinId arity
+                    id `setIdDetails` JoinId arity (idCbvMarks_maybe id)
   where
     is_vanilla_or_join id = case Var.idDetails id of
                               VanillaId -> True
+                              -- Can workers become join ids? Yes!
+                              StrictWorkerId {} -> pprTraceDebug "asJoinId (strict worker)" (ppr id) True
                               JoinId {} -> True
                               _         -> False
 
@@ -688,6 +701,9 @@ isStrictId id
                   isStrUsedDmd (idDemandInfo id)
                   -- Take the best of both strictnesses - old and new
 
+idTagSig_maybe :: Id -> Maybe TagSig
+idTagSig_maybe = tagSig . idInfo
+
 ---------------------------------
 -- UNFOLDING
 
@@ -710,6 +726,49 @@ idDemandInfo       id = demandInfo (idInfo id)
 
 setIdDemandInfo :: Id -> Demand -> Id
 setIdDemandInfo id dmd = modifyIdInfo (`setDemandInfo` dmd) id
+
+setIdTagSig :: Id -> TagSig -> Id
+setIdTagSig id sig = modifyIdInfo (`setTagSig` sig) id
+
+-- | If all marks are NotMarkedStrict we just set nothing.
+setIdCbvMarks :: Id -> [CbvMark] -> Id
+setIdCbvMarks id marks
+  | not (any isMarkedCbv marks) = maybeModifyIdDetails (removeMarks $ idDetails id) id
+  | otherwise =
+      -- pprTrace "setMarks:" (ppr id <> text ":" <> ppr marks) $
+      case idDetails id of
+        -- good ol (likely worker) function
+        VanillaId ->      id `setIdDetails` (StrictWorkerId trimmedMarks)
+        JoinId arity _ -> id `setIdDetails` (JoinId arity (Just trimmedMarks))
+        -- Updating an existing strict worker.
+        StrictWorkerId _ -> id `setIdDetails` (StrictWorkerId trimmedMarks)
+        -- Do nothing for these
+        RecSelId{} -> id
+        DFunId{} -> id
+        _ -> pprTrace "setIdCbvMarks: Unable to set cbv marks for" (ppr id $$
+              text "marks:" <> ppr marks $$
+              text "idDetails:" <> ppr (idDetails id)) id
+
+    where
+      -- (Currently) no point in passing args beyond the arity unlifted.
+      -- We would have to eta expand all call sites to (length marks).
+      -- Perhaps that's sensible but for now be conservative.
+      trimmedMarks = take (idArity id) marks
+      removeMarks details = case details of
+        JoinId arity (Just _) -> Just $ JoinId arity Nothing
+        StrictWorkerId _ -> Just VanillaId
+        _ -> Nothing
+
+idCbvMarks_maybe :: Id -> Maybe [CbvMark]
+idCbvMarks_maybe id = case idDetails id of
+  StrictWorkerId marks -> Just marks
+  JoinId _arity marks  -> marks
+  _                    -> Nothing
+
+-- Id must be called with at least this arity in order to allow arguments to
+-- be passed unlifted.
+idCbvMarkArity :: Id -> Arity
+idCbvMarkArity fn = maybe 0 length (idCbvMarks_maybe fn)
 
 setCaseBndrEvald :: StrictnessMark -> Id -> Id
 -- Used for variables bound by a case expressions, both the case-binder
@@ -883,6 +942,7 @@ updOneShotInfo id one_shot
 --      f = \x -> e
 -- If we change the one-shot-ness of x, f's type changes
 
+-- Replaces the id info if the zapper returns @Just idinfo@
 zapInfo :: (IdInfo -> Maybe IdInfo) -> Id -> Id
 zapInfo zapper id = maybeModifyIdInfo (zapper (idInfo id)) id
 
@@ -968,7 +1028,7 @@ transferPolyIdInfo :: Id        -- Original Id
                    -> Id        -- New Id
                    -> Id
 transferPolyIdInfo old_id abstract_wrt new_id
-  = modifyIdInfo transfer new_id
+  = modifyIdInfo transfer new_id `setIdCbvMarks` new_cbv_marks
   where
     arity_increase = count isId abstract_wrt    -- Arity increases by the
                                                 -- number of value binders
@@ -984,6 +1044,18 @@ transferPolyIdInfo old_id abstract_wrt new_id
     new_strictness  = prependArgsDmdSig arity_increase old_strictness
     old_cpr         = cprSigInfo old_info
 
+    old_cbv_marks   = fromMaybe (replicate old_arity NotMarkedCbv) (idCbvMarks_maybe old_id)
+    abstr_cbv_marks = mapMaybe getMark abstract_wrt
+    new_cbv_marks   = abstr_cbv_marks ++ old_cbv_marks
+
+    getMark v
+      | not (isId v)
+      = Nothing
+      | isId v
+      , isEvaldUnfolding (idUnfolding v)
+      , not (isUnliftedType $ idType v)
+      = Just MarkedCbv
+      | otherwise = Just NotMarkedCbv
     transfer new_info = new_info `setArityInfo` new_arity
                                  `setInlinePragInfo` old_inline_prag
                                  `setOccInfo` new_occ_info

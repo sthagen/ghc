@@ -6,6 +6,7 @@ A library for the ``worker\/wrapper'' back-end to the strictness analyser
 
 
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
 module GHC.Core.Opt.WorkWrap.Utils
    ( WwOpts(..), initWwOpts, mkWwBodies, mkWWstr, mkWWstr_one, mkWorkerArgs
@@ -13,7 +14,8 @@ module GHC.Core.Opt.WorkWrap.Utils
    , UnboxingDecision(..), InsideInlineableFun(..), wantToUnboxArg
    , findTypeShape, IsRecDataConResult(..), isRecDataCon, finaliseBoxity
    , mkAbsentFiller
-   , isWorkerSmallEnough
+   , isWorkerSmallEnough, isGoodWorker, WorkerQuality
+   , badWorker , goodWorker
    )
 where
 
@@ -145,6 +147,8 @@ data WwOpts
   , wo_max_worker_args   :: !Int
   -- Used for absent argument error message
   , wo_module            :: !Module
+  , wo_unlift_strict     :: !Bool -- Generate workers even if the only effect is some args
+                                  -- get passed unlifted.
   }
 
 initWwOpts :: Module -> DynFlags -> FamInstEnvs -> WwOpts
@@ -155,10 +159,12 @@ initWwOpts this_mod dflags fam_envs = MkWwOpts
   , wo_fun_to_thunk      = gopt Opt_FunToThunk dflags
   , wo_max_worker_args   = maxWorkerArgs dflags
   , wo_module            = this_mod
+  , wo_unlift_strict     = gopt Opt_WorkerWrapperUnlift dflags
   }
 
 type WwResult
   = ([Demand],              -- Demands for worker (value) args
+     [CbvMark],       -- Cbv marks for worker (value) args
      JoinArity,             -- Number of worker (type OR value) args
      Id -> CoreExpr,        -- Wrapper body, lacking only the worker Id
      CoreExpr -> CoreExpr)  -- Worker body, lacking the original function rhs
@@ -228,16 +234,17 @@ mkWwBodies opts fun_id arg_vars res_ty demands res_cpr
               zapped_arg_vars = map zap_var arg_vars
               (subst, cloned_arg_vars) = cloneBndrs empty_subst uniq_supply zapped_arg_vars
               res_ty' = GHC.Core.Subst.substTy subst res_ty
+              init_cbv_marks = map (const NotMarkedCbv) cloned_arg_vars
 
-        ; (useful1, work_args, wrap_fn_str, fn_args)
-             <- mkWWstr opts cloned_arg_vars
+        ; (useful1, work_args, work_marks, wrap_fn_str, fn_args)
+             <- mkWWstr opts cloned_arg_vars init_cbv_marks
 
         -- Do CPR w/w.  See Note [Always do CPR w/w]
         ; (useful2, wrap_fn_cpr, work_fn_cpr, cpr_res_ty)
               <- mkWWcpr_entry opts res_ty' res_cpr
 
-        ; let (work_lam_args, work_call_args) = mkWorkerArgs fun_id (wo_fun_to_thunk opts)
-                                                             work_args cpr_res_ty
+        ; let (work_lam_args, work_call_args, work_call_cbv) = mkWorkerArgs fun_id (wo_fun_to_thunk opts)
+                                                                 work_args work_marks cpr_res_ty
               call_work work_fn  = mkVarApps (Var work_fn) work_call_args
               call_rhs fn_rhs = mkAppsBeta fn_rhs fn_args
                                   -- See Note [Join points and beta-redexes]
@@ -248,7 +255,12 @@ mkWwBodies opts fun_id arg_vars res_ty demands res_cpr
         ; if isWorkerSmallEnough (wo_max_worker_args opts) (length demands) work_args
              && not (too_many_args_for_join_point arg_vars)
              && ((useful1 && not only_one_void_argument) || useful2)
-          then return (Just (worker_args_dmds, length work_call_args,
+          then  assertPpr (length work_call_cbv == length worker_args_dmds)
+                          (text "cbv" <+> ppr work_call_cbv <> parens (int $ length work_call_cbv) $$
+                           text "wrk-dmds" <+> ppr worker_args_dmds $$
+                           text "fnd-args" <+> ppr fun_id <+> ppr arg_vars $$
+                           text "wrk-args" <+> ppr work_args) $
+                return (Just (worker_args_dmds, work_call_cbv, length work_call_args,
                        wrapper_body, worker_body))
           else return Nothing
         }
@@ -379,17 +391,20 @@ We use the state-token type which generates no code.
 mkWorkerArgs :: Id      -- The wrapper Id
              -> Bool
              -> [Var]
+             -> [CbvMark]
              -> Type    -- Type of body
              -> ([Var], -- Lambda bound args
-                 [Var]) -- Args at call site
-mkWorkerArgs wrap_id fun_to_thunk args res_ty
+                 [Var],
+                 [CbvMark]
+                 ) -- Args at call site
+mkWorkerArgs wrap_id fun_to_thunk args cbv_marks res_ty
     | not (isJoinId wrap_id) -- Join Ids never need an extra arg
     , not (any isId args)    -- No existing value lambdas
     , needs_a_value_lambda   -- and we need to add one
-    = (args ++ [voidArgId], args ++ [voidPrimId])
+    = (args ++ [voidArgId], args ++ [voidPrimId], [NotMarkedCbv])
 
     | otherwise
-    = (args, args)
+    = (args, args, cbv_marks)
     where
       -- If fun_to_thunk is False we always keep at least one value
       --   argument: see Note [Protecting the last value argument]
@@ -559,6 +574,32 @@ data UnboxingDecision s
   -- instantiation with 'dataConRepInstPat'.
   -- The @[s]@ carries the bits of information with which we can continue
   -- unboxing, e.g. @s@ will be 'Demand' or 'Cpr'.
+  | Unlift
+  -- ^ The argument can't be unboxed, but it is likely good to pass it unlifted.
+  -- Applies to strictly used sum types.
+
+-- | Tells us if we should bother to create a worker for the giving binding.
+type WorkerQuality = Bool -- True <=> Yes; False <=> No.
+
+-- If we have a function with a stable unfolding, or NOINLINE, unlifting it's argument can destroy rules
+-- so don't unless it get's W/Wed anyway.
+unliftWorkerArg :: WwOpts -> WorkerQuality
+unliftWorkerArg !opts
+    -- Always unlift if possible
+    | wo_unlift_strict opts = goodWorker
+    -- Never unlift if it would cause additional W/W splits.
+    | otherwise = badWorker
+
+badWorker :: WorkerQuality
+badWorker = False
+
+goodWorker :: WorkerQuality
+goodWorker = True
+
+isGoodWorker :: WorkerQuality -> Bool
+isGoodWorker = id
+
+
 
 -- | Unwraps the 'Boxity' decision encoded in the given 'SubDemand' and returns
 -- a 'DataConPatContext' as well the nested demands on fields of the 'DataCon'
@@ -569,7 +610,7 @@ wantToUnboxArg
   -> Demand              -- ^ How the arg was used
   -> UnboxingDecision Demand
 -- See Note [Which types are unboxed?]
-wantToUnboxArg fam_envs ty (n :* sd)
+wantToUnboxArg fam_envs ty dmd@(n :* sd)
   | isAbs n
   = DropAbsent
 
@@ -577,9 +618,15 @@ wantToUnboxArg fam_envs ty (n :* sd)
   , Just dc <- tyConSingleAlgDataCon_maybe tc
   , let arity = dataConRepArity dc
   , Just (Unboxed, ds) <- viewProd arity sd -- See Note [Boxity Analysis]
-  -- NB: No strictness or evaluatedness checks here. That is done by
+  -- NB: No strictness or evaluatedness checks for unboxing here. That is done by
   -- 'finaliseBoxity'!
   = Unbox (DataConPatContext dc tc_args co) ds
+
+  -- See Note [Strict Worker Ids]
+  | isStrUsedDmd dmd
+  , not (isFunTy ty)
+  , not (isUnliftedType ty) -- Already unlifted!
+  = Unlift
 
   | otherwise
   = StopUnboxing
@@ -898,6 +945,59 @@ other cases where something went avoidably wrong.
 This warning also triggers for the stream fusion library within `text`.
 We can'easily W/W constructed results like `Stream` because we have no simple
 way to express existential types in the worker's type signature.
+
+Note [WW for calling convention]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+If we know a function f will always evaluate one of its
+arguments we might decide that it should rather get evaluated
+by the caller. We call this "unlifting" the argument.
+The advantage is that if the caller knows that the argument
+is already evaluated, then it has nothing to do.
+This evaluation avoidance can be quite beneficial.
+Especially for recursive functions who pass the same lifted argument
+along on each iteration or walk over strict data structures.
+
+One we to achieve this is to do a W/W split, where the wrapper does
+One way to achieve this is to do a W/W split, where the wrapper does
+the evaluation, and the worker can treat its arguments as unlifted.
+The wrapper is small enough to be inlined at some call sites and
+the evaluation is then potentially optimised out.
+
+Performing W/W might not always be a win. Hence we have the following strategies with different trade-offs:
+A) Never do W/W *just* for unlifting of arguments.
+  + Very conservative - doesn't break any rules
+  - Lot's of performance left on the table
+B) Do W/W on just about anything where it might be
+  beneficial.
+  + Exploits pretty much every oppertunity for unlifting.
+  - A bit of compile time cost for all the wrappers.
+  - Breaks rules which would otherwise fire inside non-INLINE[ABLE] functions. See #20364.
+C) Unlift *any* (non-boot exported) functions arguments if they are strict.
+  That is instead of creating a Worker with the new calling convention we
+  change the calling convention of the binding itself.
+  + Exploits every opportunity for unlifting.
+  + Maybe less bad interactions with rules.
+  - Requires tracking of boot-exported definitions.
+  - Requires either:
+    ~ Eta-expansion at *all* call sites in order to generate
+      an impedance matcher function. Leading to massive code bloat.
+      Essentially we end up creating a imprompto wrapper function
+      wherever we wouldn't inline the wrapper with a W/W approach.
+    ~ There is the option of achieving this without eta-expansion if we instead expand
+      the partial application code to check for demands on the calling convention and
+      for it to evaluate the arguments. The main downsides there would be the complexity
+      of the implementation and that it carries a certain overhead even for functions who
+      don't take advantage of this functionality. I haven't tried this approach because it's
+      not trivial to implement and doing W/W splits seems to work well enough.
+
+Currently we use the first approach A) by default, with a flag that allows users to fall back to the
+more aggressive approach B).
+I also tried the third approach C) using eta-expansion which wasn't fruitful.
+See https://gitlab.haskell.org/ghc/ghc/-/merge_requests/5614#note_389903.
+Doing it via changing how unknown calls work might be better. But also a lot more invasive.
+If you are interested give it a try! But besides breaking fewer rules it's unlikely to provide
+additional benefits.
+See also Note [Tag Inference] and Note [Strict Worker Ids]
 -}
 
 {-
@@ -911,26 +1011,31 @@ way to express existential types in the worker's type signature.
 mkWWstr :: WwOpts
         -> [Var]                         -- Wrapper args; have their demand info on them
                                          --  *Includes type variables*
-        -> UniqSM (Bool,                 -- Is this useful
+        -> [CbvMark]              -- cbv info for arguments
+        -> UniqSM (WorkerQuality,        -- Will this result in a useful worker
                    [Var],                -- Worker args
+                   [CbvMark],     -- Are the worker args call by value?
                    CoreExpr -> CoreExpr, -- Wrapper body, lacking the worker call
                                          -- and without its lambdas
                                          -- This fn adds the unboxing
                    [CoreExpr])           -- Reboxed args for the call to the
                                          -- original RHS. Corresponds one-to-one
                                          -- with the wrapper arg vars
-mkWWstr opts args
-  = go args
+mkWWstr opts args cbv_info
+  = go args cbv_info
   where
-    go_one arg = mkWWstr_one opts arg
+    go_one arg cbv = mkWWstr_one opts arg cbv
 
-    go []           = return (False, [], nop_fn, [])
-    go (arg : args) = do { (useful1, args1, wrap_fn1, wrap_arg)  <- go_one arg
-                         ; (useful2, args2, wrap_fn2, wrap_args) <- go args
+    go []           _ = return (badWorker, [], [], nop_fn, [])
+    go (arg : args) (cbv:cbvs)
+      =               do { (useful1, args1, cbv1, wrap_fn1, wrap_arg)  <- go_one arg cbv
+                         ; (useful2, args2, cbv2, wrap_fn2, wrap_args) <- go args cbvs
                          ; return ( useful1 || useful2
                                   , args1 ++ args2
+                                  , cbv1 ++ cbv2
                                   , wrap_fn1 . wrap_fn2
                                   , wrap_arg:wrap_args ) }
+    go _ _ = panic "mkWWstr: Impossible - cbv/arg length missmatch"
 
 ----------------------
 -- mkWWstr_one wrap_var = (useful, work_args, wrap_fn, wrap_arg)
@@ -939,19 +1044,26 @@ mkWWstr opts args
 --   * wrap_arg assumes work_args are in scope, and builds a ConApp that
 --        reconstructs the RHS of wrap_var that we pass to the original RHS
 -- See Note [Worker/wrapper for Strictness and Absence]
-mkWWstr_one :: WwOpts -> Var -> UniqSM (Bool, [Var], CoreExpr -> CoreExpr, CoreExpr)
-mkWWstr_one opts arg =
+mkWWstr_one :: WwOpts
+            -> Var
+            -> CbvMark
+            -> UniqSM (WorkerQuality, [Var], [CbvMark], CoreExpr -> CoreExpr, CoreExpr)
+mkWWstr_one opts arg marked_cbv =
   case wantToUnboxArg fam_envs arg_ty arg_dmd of
     _ | isTyVar arg -> do_nothing
 
     DropAbsent
       | Just absent_filler <- mkAbsentFiller opts arg
-         -- Absent case.  We can't always handle absence for arbitrary
+         -- Absent case.  Dropt the argument from the worker.
+         -- We can't always handle absence for arbitrary
          -- unlifted types, so we need to choose just the cases we can
          -- (that's what mkAbsentFiller does)
-      -> return (True, [], nop_fn, absent_filler)
+      -> return (goodWorker, [], [], nop_fn, absent_filler)
 
-    Unbox dcpc ds -> unbox_one_arg opts arg ds dcpc
+    Unbox dcpc ds -> unbox_one_arg opts arg ds dcpc marked_cbv
+
+    Unlift -> return (unliftWorkerArg opts, [setIdUnfolding arg evaldUnfolding]
+                     ,[MarkedCbv], nop_fn, varToCoreExpr arg)
 
     _ -> do_nothing -- Other cases, like StopUnboxing
 
@@ -959,27 +1071,52 @@ mkWWstr_one opts arg =
     fam_envs   = wo_fam_envs opts
     arg_ty     = idType arg
     arg_dmd    = idDemandInfo arg
-    do_nothing = return (False, [arg], nop_fn, varToCoreExpr arg)
+    -- Type args don't get cbv marks
+    arg_cbv    = if isTyVar arg then [] else [marked_cbv]
+    do_nothing = return (badWorker, [arg], arg_cbv, nop_fn, varToCoreExpr arg)
 
 unbox_one_arg :: WwOpts
           -> Var
           -> [Demand]
           -> DataConPatContext
-          -> UniqSM (Bool, [Var], CoreExpr -> CoreExpr, CoreExpr)
+          -> CbvMark
+          -> UniqSM (WorkerQuality, [Var], [CbvMark], CoreExpr -> CoreExpr, CoreExpr)
 unbox_one_arg opts arg_var ds
           DataConPatContext { dcpc_dc = dc, dcpc_tc_args = tc_args
                             , dcpc_co = co }
+          _marked_cbv
   = do { pat_bndrs_uniqs <- getUniquesM
        ; let ex_name_fss = map getOccFS $ dataConExTyCoVars dc
+             -- Create new arguments we get when unboxing dc
              (ex_tvs', arg_ids) =
                dataConRepFSInstPat (ex_name_fss ++ repeat ww_prefix) pat_bndrs_uniqs (idMult arg_var) dc tc_args
+             -- Apply str info to new args.
              arg_ids' = zipWithEqual "unbox_one_arg" setIdDemandInfo arg_ids ds
              unbox_fn = mkUnpackCase (Var arg_var) co (idMult arg_var)
                                      dc (ex_tvs' ++ arg_ids')
-       ; (_, worker_args, wrap_fn, wrap_args) <- mkWWstr opts (ex_tvs' ++ arg_ids')
+             -- Mark arguments coming out of strict fields as evaluated and give them cbv semantics. See Note [Strict Worker Ids]
+             cbv_arg_marks = zipWithEqual "unbox_one_arg" bangToMark (dataConRepStrictness dc) arg_ids'
+             unf_args = zipWith setEvald arg_ids' cbv_arg_marks
+             cbv_marks = (map (const NotMarkedCbv) ex_tvs') ++ cbv_arg_marks
+       ; (_sub_args_quality, worker_args, cbv_marks, wrap_fn, wrap_args) <- mkWWstr opts (ex_tvs' ++ unf_args) cbv_marks
        ; let wrap_arg = mkConApp dc (map Type tc_args ++ wrap_args) `mkCast` mkSymCo co
-       ; return (True, worker_args, unbox_fn . wrap_fn, wrap_arg) }
+       ; assertPpr (length (filter isId worker_args) == length cbv_marks)
+          ( ppr arg_var $$
+            ppr worker_args $$
+            ppr cbv_marks $$
+            ppr (length cbv_marks) $$
+            ppr (map idType worker_args) $$
+            ppr (map isId worker_args)
+          ) $ return ()
+       ; return (goodWorker, worker_args, cbv_marks, unbox_fn . wrap_fn, wrap_arg) }
                           -- Don't pass the arg, rebox instead
+    where bangToMark :: StrictnessMark -> Id -> CbvMark
+          bangToMark NotMarkedStrict _ = NotMarkedCbv
+          bangToMark MarkedStrict v
+            | isUnliftedType (idType v) = NotMarkedCbv
+            | otherwise                 = MarkedCbv
+          setEvald var NotMarkedCbv  = var
+          setEvald var MarkedCbv     = setIdUnfolding var evaldUnfolding
 
 -- | Tries to find a suitable absent filler to bind the given absent identifier
 -- to. See Note [Absent fillers].
@@ -1248,7 +1385,8 @@ findTypeShape :: FamInstEnvs -> Type -> TypeShape
 -- The data type TypeShape is defined in GHC.Types.Demand
 -- See Note [Trimming a demand to a type] in GHC.Core.Opt.DmdAnal
 findTypeShape fam_envs ty
-  = go (setRecTcMaxBound 2 initRecTc) ty
+  = {-# SCC findTypeShape #-}
+    go (setRecTcMaxBound 2 initRecTc) ty
        -- You might think this bound of 2 is low, but actually
        -- I think even 1 would be fine.  This only bites for recursive
        -- product types, which are rare, and we really don't want
@@ -1437,6 +1575,7 @@ finaliseBoxity
   -> Demand
 finaliseBoxity env in_inl_fun ty dmd = go NotMarkedStrict ty dmd
   where
+    go :: StrictnessMark -> Type -> Demand -> Demand
     go mark ty dmd@(n :* _) =
       case wantToUnboxArg env ty dmd of
         DropAbsent -> dmd
@@ -1473,14 +1612,14 @@ mkWWcpr_entry
   :: WwOpts
   -> Type                              -- function body
   -> Cpr                               -- CPR analysis results
-  -> UniqSM (Bool,                     -- Is w/w'ing useful?
+  -> UniqSM (WorkerQuality,            -- Is w/w'ing useful?
              CoreExpr -> CoreExpr,     -- New wrapper. 'nop_fn' if not useful
              CoreExpr -> CoreExpr,     -- New worker.  'nop_fn' if not useful
              Type)                     -- Type of worker's body.
                                        -- Just the input body_ty if not useful
 -- ^ Entrypoint to CPR W/W. See Note [Worker/wrapper for CPR] for an overview.
 mkWWcpr_entry opts body_ty body_cpr
-  | not (wo_cpr_anal opts) = return (False, nop_fn, nop_fn, body_ty)
+  | not (wo_cpr_anal opts) = return (badWorker, nop_fn, nop_fn, body_ty)
   | otherwise = do
     -- Part (1)
     res_bndr <- mk_res_bndr body_ty
@@ -1498,8 +1637,8 @@ mkWWcpr_entry opts body_ty body_cpr
         work_fn body = bind_res_bndr body (work_unpack_res transit_tup) -- 1 2 3
         work_body_ty = exprType transit_tup
     return $ if not useful
-                then (False, nop_fn, nop_fn, body_ty)
-                else (True, wrap_fn, work_fn, work_body_ty)
+                then (badWorker, nop_fn, nop_fn, body_ty)
+                else (goodWorker, wrap_fn, work_fn, work_body_ty)
 
 -- | Part (1) of Note [Worker/wrapper for CPR].
 mk_res_bndr :: Type -> UniqSM Id
@@ -1515,14 +1654,14 @@ mk_res_bndr body_ty = do
 --   2. The list of transit variables (see the Note).
 --   3. The result builder expression for the wrapper.  The original case binder if not useful.
 --   4. The result unpacking expression for the worker. 'nop_fn' if not useful.
-type CprWwResultOne  = (Bool, OrdList Var,  CoreExpr , CoreExpr -> CoreExpr)
-type CprWwResultMany = (Bool, OrdList Var, [CoreExpr], CoreExpr -> CoreExpr)
+type CprWwResultOne  = (WorkerQuality, OrdList Var,  CoreExpr , CoreExpr -> CoreExpr)
+type CprWwResultMany = (WorkerQuality, OrdList Var, [CoreExpr], CoreExpr -> CoreExpr)
 
 mkWWcpr :: WwOpts -> [Id] -> [Cpr] -> UniqSM CprWwResultMany
 mkWWcpr _opts vars []   =
   -- special case: No CPRs means all top (for example from FlatConCpr),
   -- hence stop WW.
-  return (False, toOL vars, map varToCoreExpr vars, nop_fn)
+  return (badWorker, toOL vars, map varToCoreExpr vars, nop_fn)
 mkWWcpr opts  vars cprs = do
   -- No existentials in 'vars'. 'wantToUnboxResult' should have checked that.
   massertPpr (not (any isTyVar vars)) (ppr vars $$ ppr cprs)
@@ -1541,7 +1680,7 @@ mkWWcpr_one opts res_bndr cpr
   , Unbox dcpc arg_cprs <- wantToUnboxResult (wo_fam_envs opts) (idType res_bndr) cpr
   = unbox_one_result opts res_bndr arg_cprs dcpc
   | otherwise
-  = return (False, unitOL res_bndr, varToCoreExpr res_bndr, nop_fn)
+  = return (badWorker, unitOL res_bndr, varToCoreExpr res_bndr, nop_fn)
 
 unbox_one_result
   :: WwOpts -> Id -> [Cpr] -> DataConPatContext -> UniqSM CprWwResultOne
@@ -1569,9 +1708,9 @@ unbox_one_result opts res_bndr arg_cprs
 
   -- Don't try to WW an unboxed tuple return type when there's nothing inside
   -- to unbox further.
-  return $ if isUnboxedTupleDataCon dc && not nested_useful
-              then ( False, unitOL res_bndr, Var res_bndr, nop_fn )
-              else ( True
+  return $ if isUnboxedTupleDataCon dc && not (nested_useful)
+              then ( badWorker, unitOL res_bndr, Var res_bndr, nop_fn )
+              else ( goodWorker
                    , transit_vars
                    , rebuilt_result
                    , this_work_unbox_res . work_unbox_res

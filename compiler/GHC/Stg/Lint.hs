@@ -40,6 +40,7 @@ module GHC.Stg.Lint ( lintStgTopBindings ) where
 import GHC.Prelude
 
 import GHC.Stg.Syntax
+import GHC.Stg.Utils
 
 import GHC.Driver.Session
 import GHC.Driver.Config.Diagnostic
@@ -69,6 +70,7 @@ import GHC.Data.Bag         ( Bag, emptyBag, isEmptyBag, snocBag, bagToList )
 
 import Control.Applicative ((<|>))
 import Control.Monad
+import Data.Maybe
 
 lintStgTopBindings :: forall a . (OutputablePass a, BinderP a ~ Id)
                    => Logger
@@ -191,9 +193,20 @@ lintStgExpr :: (OutputablePass a, BinderP a ~ Id) => GenStgExpr a -> LintM ()
 
 lintStgExpr (StgLit _) = return ()
 
-lintStgExpr (StgApp fun args) = do
+lintStgExpr e@(StgApp fun args) = do
     lintStgVar fun
     mapM_ lintStgArg args
+
+    lf <- getLintFlags
+    when (lf_unarised lf) $ do
+      let marks = fromMaybe [] $ idCbvMarks_maybe fun
+      if length marks > length args
+        then addErrL $ hang (text "Undersatured cbv marked ID in App" <+> ppr e ) 2 $
+          (text "marks" <> ppr marks $$
+          text "args" <> ppr args $$
+          text "arity" <> ppr (idArity fun) $$
+          text "join_arity" <> ppr (isJoinId_maybe fun))
+        else return ()
 
 lintStgExpr app@(StgConApp con _n args _arg_tys) = do
     -- unboxed sums should vanish during unarise

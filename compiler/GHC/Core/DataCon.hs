@@ -56,7 +56,7 @@ module GHC.Core.DataCon (
         isUnboxedSumDataCon,
         isVanillaDataCon, isNewDataCon, classDataCon, dataConCannotMatch,
         dataConUserTyVarsArePermuted,
-        isBanged, isMarkedStrict, eqHsBang, isSrcStrict, isSrcUnpacked,
+        isBanged, isMarkedStrict, cbvFromStrictMark, eqHsBang, isSrcStrict, isSrcUnpacked,
         specialPromotedDc,
 
         -- ** Promotion related functions
@@ -740,6 +740,7 @@ data SrcUnpackedness = SrcUnpack -- ^ {-# UNPACK #-} specified
 -- StrictnessMark is internal only, used to indicate strictness
 -- of the DataCon *worker* fields
 data StrictnessMark = MarkedStrict | NotMarkedStrict
+    deriving Eq
 
 -- | An 'EqSpec' is a tyvar/type pair representing an equality made in
 -- rejigging a GADT constructor
@@ -936,6 +937,16 @@ instance Outputable StrictnessMark where
     ppr MarkedStrict    = text "!"
     ppr NotMarkedStrict = empty
 
+instance Binary StrictnessMark where
+    put_ bh NotMarkedStrict = putByte bh 0
+    put_ bh MarkedStrict    = putByte bh 1
+    get bh =
+      do h <- getByte bh
+         case h of
+           0 -> return NotMarkedStrict
+           1 -> return MarkedStrict
+           _ -> panic "Invalid binary format"
+
 instance Binary SrcStrictness where
     put_ bh SrcLazy     = putByte bh 0
     put_ bh SrcStrict   = putByte bh 1
@@ -985,6 +996,11 @@ isSrcUnpacked _ = False
 isMarkedStrict :: StrictnessMark -> Bool
 isMarkedStrict NotMarkedStrict = False
 isMarkedStrict _               = True   -- All others are strict
+
+cbvFromStrictMark :: StrictnessMark -> CbvMark
+cbvFromStrictMark NotMarkedStrict = NotMarkedCbv
+cbvFromStrictMark MarkedStrict = MarkedCbv
+
 
 {- *********************************************************************
 *                                                                      *

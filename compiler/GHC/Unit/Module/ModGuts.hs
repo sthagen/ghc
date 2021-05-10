@@ -37,6 +37,7 @@ import GHC.Types.SrcLoc
 import GHC.Types.CostCentre
 
 import Data.Set (Set)
+import GHC.Types.Name.Set (NameSet)
 
 
 -- | A ModGuts is carried through the compiler, accumulating stuff as it goes
@@ -88,6 +89,7 @@ data ModGuts
         mg_fam_inst_env :: FamInstEnv,          -- ^ Type-family instance environment for
                                                 -- /home-package/ modules (including this
                                                 -- one); c.f. 'tcg_fam_inst_env'
+        mg_boot_exports :: !NameSet,             -- Things that are also export via hs-boot file
 
         mg_safe_haskell :: SafeHaskellMode,     -- ^ Safe Haskell mode
         mg_trust_pkg    :: Bool,                -- ^ Do we need to trust our

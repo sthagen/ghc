@@ -234,13 +234,19 @@ import qualified Data.Set as S
 import Data.Set (Set)
 import Data.Functor
 import Control.DeepSeq (force)
-import Data.Bifunctor (first)
+
 import GHC.Data.Maybe
 import GHC.Driver.Env.KnotVars
 import GHC.Types.Name.Set (NonCaffySet)
 import GHC.Driver.GenerateCgIPEStub (generateCgIPEStub)
 import Data.List.NonEmpty (NonEmpty ((:|)))
 
+import Data.Bifunctor (first)
+
+import GHC.Stg.InferTags
+import GHC.Stg.InferTags.Rewrite
+import GHC.Types.Unique.Supply
+-- import GHC.Driver.Ppr
 
 {- **********************************************************************
 %*                                                                      *
@@ -1782,8 +1788,20 @@ doCodeGen hsc_env this_mod denv data_tycons
     let tmpfs  = hsc_tmpfs hsc_env
     let platform = targetPlatform dflags
 
-    let stg_binds_w_fvs = annTopBindingsFreeVars stg_binds
+    putDumpFileMaybe logger Opt_D_dump_stg_cg "CodeGenInput STG:" FormatSTG (pprGenStgTopBindings (initStgPprOpts dflags) stg_binds)
 
+    -- Annotate binders with tag information.
+    let (!stg_binds_w_tags) = {-# SCC "StgTagFields" #-}
+                                        inferTags stg_binds
+    putDumpFileMaybe logger Opt_D_dump_stg_tags "CodeGenAnal STG:" FormatSTG (pprGenStgTopBindings (initStgPprOpts dflags) stg_binds_w_tags)
+
+    let export_tag_info = collectExportInfo stg_binds_w_tags
+
+    -- Rewrite STG to uphold the strict field invariant
+    us_t <- mkSplitUniqSupply 't'
+    let sfi_seqd_binds = {-# SCC "StgTagRewrite" #-} rewriteTopBinds this_mod us_t stg_binds_w_tags :: [TgStgTopBinding]
+
+    let stg_binds_w_fvs = annTopBindingsFreeVars sfi_seqd_binds
     putDumpFileMaybe logger Opt_D_dump_stg_final "Final STG:" FormatSTG (pprGenStgTopBindings (initStgPprOpts dflags) stg_binds_w_fvs)
 
     let stg_to_cmm = case stgToCmmHook hooks of
@@ -1822,7 +1840,7 @@ doCodeGen hsc_env this_mod denv data_tycons
             putDumpFileMaybe logger Opt_D_dump_cmm "Output Cmm" FormatCMM (pdoc platform a)
           return a
 
-    return $ Stream.mapM dump2 $ generateCgIPEStub hsc_env this_mod denv pipeline_stream
+    return $ Stream.mapM dump2 $ generateCgIPEStub hsc_env this_mod denv export_tag_info pipeline_stream
 
 myCoreToStgExpr :: Logger -> DynFlags -> InteractiveContext
                 -> Bool

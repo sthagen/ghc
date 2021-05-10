@@ -18,68 +18,9 @@ import GHC.Core.DataCon
 import GHC.Types.Name.Env
 import GHC.Types.Name.Set
 import GHC.Stg.InferTags.TagSig
-import GHC.Utils.Outputable
+-- import GHC.Utils.Outputable
 
 
-{-
-Note [Conveying CAF-info and LFInfo between modules]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Some information about an Id is generated in the code generator, and is not
-available earlier.  Namely:
-
-* CAF info.   Code motion in Cmm or earlier phases may move references around so
-  we compute information about which bits of code refer to which CAF late in the
-  Cmm pipeline.
-
-* LambdaFormInfo. This records the details of a closure representation,
-  including
-    - the final arity (for functions)
-    - whether it is a data constructor, and if so its tag
-
-Collectively we call this CgInfo (see GHC.StgToCmm.Types).
-
-It's very useful for importing modules to have this information. We can always
-make a conservative assumption, but that is bad: e.g.
-
-* For CAF info, if we know nothing we have to assume it is a CAF which bloats
-  the SRTs of the importing module.
-
-  Conservative assumption here is made when creating new Ids.
-
-* For data constructors, we really like having well-tagged pointers. See #14677,
-  #16559, #15155, and wiki: commentary/rts/haskell-execution/pointer-tagging
-
-  Conservative assumption here is made when we import an Id without a
-  LambdaFormInfo in the interface, in GHC.StgToCmm.Closure.mkLFImported.
-
-So we arrange to always serialise this information into the interface file.  The
-moving parts are:
-
-* We record the CgInfo in the IdInfo of the Id.
-
-* GHC.Driver.Pipeline: the call to updateModDetailsIdInfos augments the
-  ModDetails constructed at the end of the Core pipeline, with CgInfo
-  gleaned from the back end.  The hard work is done in GHC.Iface.UpdateIdInfos.
-
-* For ModIface we generate the final ModIface with CgInfo in
-  GHC.Iface.Make.mkFullIface.
-
-* We don't absolutely guarantee to serialise the CgInfo: we won't if you have
-  -fomit-interface-pragmas or -fno-code; and we won't read it in if you have
-  -fignore-interface-pragmas.  (We could revisit this decision.)
--}
-
--- | Codegen-generated Id infos, to be passed to downstream via interfaces.
---
--- This stuff is for optimization purposes only, they're not compulsory.
---
--- * When CafInfo of an imported Id is not known it's safe to treat it as CAFFY.
--- * When LambdaFormInfo of an imported Id is not known it's safe to treat it as
---   `LFUnknown True` (which just says "it could be anything" and we do slow
---   entry).
---
--- See also Note [Conveying CAF-info and LFInfo between modules] above.
 --
 data CgInfos = CgInfos
   { cgNonCafs :: !NonCaffySet
@@ -136,44 +77,6 @@ data LambdaFormInfo
 
   | LFLetNoEscape       -- See LetNoEscape module for precise description
 
-instance Outputable LambdaFormInfo where
-    ppr (LFReEntrant top rep fvs argdesc) =
-      text "LFReEntrant" <> brackets
-        (ppr top <+> ppr rep <+> pprFvs fvs <+> ppr argdesc)
-    ppr (LFThunk top hasfv updateable sfi m_function) =
-      text "LFThunk" <> brackets
-        (ppr top <+> pprFvs hasfv <+> pprUpdateable updateable <+>
-         ppr sfi <+> pprFuncFlag m_function)
-    ppr (LFCon con) =
-      text "LFCon" <> brackets (ppr con)
-    ppr (LFUnknown m_func) =
-      text "LFUnknown" <> brackets (pprFuncFlag m_func)
-    ppr LFUnlifted =
-      text "LFUnlifted"
-    ppr LFLetNoEscape =
-      text "LFLetNoEscape"
-
-pprFvs :: Bool -> SDoc
-pprFvs True = text "no-fvs"
-pprFvs False = text "fvs"
-
-pprFuncFlag :: Bool -> SDoc
-pprFuncFlag True = text "mFunc"
-pprFuncFlag False = text "value"
-
-pprUpdateable :: Bool -> SDoc
-pprUpdateable True = text "updateable"
-pprUpdateable False = text "oneshot"
-
---------------------------------------------------------------------------------
-
--- | We represent liveness bitmaps as a Bitmap (whose internal representation
--- really is a bitmap).  These are pinned onto case return vectors to indicate
--- the state of the stack for the garbage collector.
---
--- In the compiled program, liveness bitmaps that fit inside a single word
--- (StgWord) are stored as a single word, while larger bitmaps are stored as a
--- pointer to an array of words.
 
 type Liveness = [Bool]   -- One Bool per word; True  <=> non-ptr or dead
                          --                    False <=> ptr
@@ -191,12 +94,7 @@ data ArgDescr
   | ArgUnknown          -- For imported binds.
                         -- Invariant: Never Unknown for binds of the module
                         -- we are compiling.
-  deriving (Eq)
 
-instance Outputable ArgDescr where
-  ppr (ArgSpec n) = text "ArgSpec" <+> ppr n
-  ppr (ArgGen ls) = text "ArgGen" <+> ppr ls
-  ppr ArgUnknown = text "ArgUnknown"
 
 --------------------------------------------------------------------------------
 -- | StandardFormInfo tells whether this thunk has one of a small number of
@@ -222,12 +120,6 @@ data StandardFormInfo
         -- There are a few of these (for 1 <= n <= MAX_SPEC_AP_SIZE) pre-compiled
         -- in the RTS to save space.
         !RepArity       -- Arity, n
-  deriving (Eq)
 
 -- | Word offset, or word count
 type WordOff = Int
-
-instance Outputable StandardFormInfo where
-  ppr NonStandardThunk = text "RegThunk"
-  ppr (SelectorThunk w) = text "SelThunk:" <> ppr w
-  ppr (ApThunk n) = text "ApThunk:" <> ppr n
