@@ -18,11 +18,13 @@ import GHCi.Message (EvalOpts(..))
 import GHC.Conc (getNumProcessors)
 import Control.Monad.IO.Class
 
--- | Initialise coercion optimiser configuration from DynFlags
+-- | Initialise coercion optimiser configuration from DynFlags, for use when
+-- performing "simple" coercion optimisation.
+-- See Note [Simple and full coercion optimisation] in GHC.Core.Coercion.Opt.
 initOptCoercionOpts :: DynFlags -> OptCoercionOpts
-initOptCoercionOpts dflags = OptCoercionOpts
-   { optCoercionEnabled = not (hasNoOptCoercion dflags)
-   }
+initOptCoercionOpts dflags
+  | gopt Opt_OptCoercionSimple dflags = SimpleCoercionOpt
+  | otherwise                         = NoCoercionOpt
 
 -- | Initialise Simple optimiser configuration from DynFlags
 initSimpleOpts :: DynFlags -> SimpleOpts

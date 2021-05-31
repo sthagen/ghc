@@ -27,7 +27,7 @@ module GHC.Driver.Session (
         FatalMessager, FlushOut(..),
         ProfAuto(..),
         glasgowExtsFlags,
-        hasPprDebug, hasNoDebugOutput, hasNoStateHack, hasNoOptCoercion,
+        hasPprDebug, hasNoDebugOutput, hasNoStateHack,
         dopt, dopt_set, dopt_unset,
         gopt, gopt_set, gopt_unset, setGeneralFlag', unSetGeneralFlag',
         wopt, wopt_set, wopt_unset,
@@ -1402,9 +1402,6 @@ hasNoDebugOutput = dopt Opt_D_no_debug_output
 hasNoStateHack :: DynFlags -> Bool
 hasNoStateHack = gopt Opt_G_NoStateHack
 
-hasNoOptCoercion :: DynFlags -> Bool
-hasNoOptCoercion = gopt Opt_G_NoOptCoercion
-
 
 -- | Test whether a 'DumpFlag' is set
 dopt :: DumpFlag -> DynFlags -> Bool
@@ -2243,8 +2240,10 @@ dynamic_flags_deps = [
         (NoArg (setGeneralFlag Opt_NoHsMain))
   , make_ord_flag defGhcFlag "fno-state-hack"
         (NoArg (setGeneralFlag Opt_G_NoStateHack))
+  , make_ord_flag defGhcFlag "fopt-coercion"
+        (NoArg (setGeneralFlag Opt_OptCoercionSimple >> setGeneralFlag Opt_OptCoercionFull))
   , make_ord_flag defGhcFlag "fno-opt-coercion"
-        (NoArg (setGeneralFlag Opt_G_NoOptCoercion))
+        (NoArg (unSetGeneralFlag Opt_OptCoercionSimple >> unSetGeneralFlag Opt_OptCoercionFull))
   , make_ord_flag defGhcFlag "with-rtsopts"
         (HasArg setRtsOpts)
   , make_ord_flag defGhcFlag "rtsopts"
@@ -3332,6 +3331,8 @@ fFlagsDeps = [
   flagSpec "block-layout-weightless"          Opt_WeightlessBlocklayout,
   flagSpec "omit-interface-pragmas"           Opt_OmitInterfacePragmas,
   flagSpec "omit-yields"                      Opt_OmitYields,
+  flagSpec "opt-coercion-full"                Opt_OptCoercionFull,
+  flagSpec "opt-coercion-simple"              Opt_OptCoercionSimple,
   flagSpec "optimal-applicative-do"           Opt_OptimalApplicativeDo,
   flagSpec "pedantic-bottoms"                 Opt_PedanticBottoms,
   flagSpec "pre-inlining"                     Opt_SimplPreInlining,
@@ -3881,6 +3882,9 @@ optLevelFlags -- see Note [Documenting optimisation flags]
     , ([1,2],   Opt_WorkerWrapper)
     , ([1,2],   Opt_SolveConstantDicts)
     , ([1,2],   Opt_NumConstantFolding)
+
+    , ([0,1,2], Opt_OptCoercionSimple)
+    , ([1,2],   Opt_OptCoercionFull)
 
     , ([2],     Opt_LiberateCase)
     , ([2],     Opt_SpecConstr)

@@ -96,8 +96,7 @@ data SimpleOpts = SimpleOpts
 defaultSimpleOpts :: SimpleOpts
 defaultSimpleOpts = SimpleOpts
    { so_uf_opts = defaultUnfoldingOpts
-   , so_co_opts = OptCoercionOpts
-      { optCoercionEnabled = False }
+   , so_co_opts = NoCoercionOpt
    }
 
 simpleOptExpr :: HasDebugCallStack => SimpleOpts -> CoreExpr -> CoreExpr
