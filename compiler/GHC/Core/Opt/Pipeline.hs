@@ -148,7 +148,9 @@ getCoreToDo logger dflags
     eta_expand_on = gopt Opt_DoLambdaEtaExpansion         dflags
     pre_inline_on = gopt Opt_SimplPreInlining             dflags
     ww_on         = gopt Opt_WorkerWrapper                dflags
-    opt_coercion  = gopt Opt_OptCoercionFull              dflags
+    opt_coercion1 = gopt Opt_OptCoercionFull1             dflags
+    opt_coercion2 = gopt Opt_OptCoercionFull2             dflags
+    opt_coercion3 = gopt Opt_OptCoercionFull3             dflags
     static_ptrs   = xopt LangExt.StaticPointers           dflags
     profiling     = ways dflags `hasWay` WayProf
 
@@ -223,15 +225,17 @@ getCoreToDo logger dflags
 
     core_todo =
      if opt_level == 0 then
-       [ runWhen opt_coercion CoreDoOptCoercion
+       [ runWhen opt_coercion1 CoreDoOptCoercion
        , static_ptrs_float_outwards
        , simplify "Non-opt simplification"
+       , runWhen opt_coercion2 CoreDoOptCoercion
        , add_caller_ccs
+       , runWhen opt_coercion3 CoreDoOptCoercion
        ]
 
      else {- opt_level >= 1 -} [
 
-       runWhen opt_coercion CoreDoOptCoercion,
+       runWhen opt_coercion1 CoreDoOptCoercion,
 
     -- We want to do the static argument transform before full laziness as it
     -- may expose extra opportunities to float things outwards. However, to fix
@@ -241,6 +245,8 @@ getCoreToDo logger dflags
 
         -- initial simplify: mk specialiser happy: minimum effort please
         simpl_gently,
+
+        runWhen opt_coercion2 CoreDoOptCoercion,
 
         -- Specialisation is best done before full laziness
         -- so that overloaded functions have all their dictionary lambdas manifest
@@ -374,7 +380,9 @@ getCoreToDo logger dflags
 
         maybe_rule_check FinalPhase,
 
-        add_caller_ccs
+        add_caller_ccs,
+
+        runWhen opt_coercion3 CoreDoOptCoercion
      ]
 
     -- Remove 'CoreDoNothing' and flatten 'CoreDoPasses' for clarity.

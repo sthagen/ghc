@@ -229,7 +229,9 @@ data GeneralFlag
    | Opt_CatchBottoms
    | Opt_NumConstantFolding
    | Opt_FastPAPCalls                  -- #6084
-   | Opt_OptCoercionFull   -- ^ Run the full coercion optimizer (as an optimization pass)
+   | Opt_OptCoercionFull1  -- ^ Run the full coercion optimizer (as an optimization pass)
+   | Opt_OptCoercionFull2
+   | Opt_OptCoercionFull3
    | Opt_OptCoercionSimple -- ^ Run the simple coercion optimizer (as part of the simple optimizer / simplifier).
                            -- See Note [Simple and full coercion optimisation] in GHC.Core.Coercion.Opt.
 
