@@ -62,9 +62,9 @@ Library
             , GHC.Lexeme
 
     -- but done by Hadrian
-    -- autogen-modules:
-    --         GHC.Version
-    --         GHC.Platform.Host
+    autogen-modules:
+            GHC.Version
+            GHC.Platform.Host
 
     build-depends: base       >= 4.7 && < 4.17,
                    binary     == 0.8.*,
