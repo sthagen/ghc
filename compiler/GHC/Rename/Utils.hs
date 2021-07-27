@@ -17,7 +17,7 @@ module GHC.Rename.Utils (
         warnUnusedTopBinds, warnUnusedLocalBinds,
         checkUnusedRecordWildcard,
         mkFieldEnv,
-        unknownSubordinateErr, badQualBndrErr, typeAppErr,
+        unknownSubordinateErr, badQualBndrErr, typeAppErr, badFieldConErr,
         wrapGenSpan, genHsVar, genLHsVar, genHsApp, genHsApps, genAppType,
         genHsIntegralLit, genHsTyLit,
         HsDocContext(..), pprHsDocContext,
@@ -613,6 +613,12 @@ typeAppErr what (L _ k)
     hang (text "Illegal visible" <+> text what <+> text "application"
             <+> quotes (char '@' <> ppr k))
        2 (text "Perhaps you intended to use TypeApplications")
+
+badFieldConErr :: Name -> FieldLabelString -> TcRnMessage
+badFieldConErr con field
+  = TcRnUnknownMessage $ mkPlainError noHints $
+    hsep [text "Constructor" <+> quotes (ppr con),
+          text "does not have field", quotes (ppr field)]
 
 -- | Ensure that a boxed or unboxed tuple has arity no larger than
 -- 'mAX_TUPLE_SIZE'.
