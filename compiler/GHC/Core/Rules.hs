@@ -794,10 +794,21 @@ The most convenient thing is to make 'match' take an MCoercion argument, thus:
 
 Note that for applications
      (e1 e2) ~ (d1 d2) |> co
-we simply fail.  You might wonder about
+where 'co' is non-reflexive, we simply fail.  You might wonder about
      (e1 e2) ~ ((d1 |> co1) d2) |> co2
 but the Simplifer pushes the casts in an application to to the
 right, if it can, so this doesn't really arise.
+
+Note [Coercion arguments]
+~~~~~~~~~~~~~~~~~~~~~~~~~
+What if we have (f co) in the template, where the 'co' is a coercion
+argument to f?  Right now we have nothing in place to ensure that a
+coercion /argument/ in the template is a variable.  We really should,
+perhaps by abstracting over that variable.
+
+C.f. the treatment of dictionaries in GHC.HsToCore.Binds.decompseRuleLhs.
+
+For now, though, we simply behave badly, by failing in match_co.
 
 Note [Casts in the template]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -820,7 +831,11 @@ can use it in $sf.  So a Cast on the LHS (the template) calls
 match_co, which succeeds when the template cast is a variable -- which
 it always is.  That is why match_co has so few cases.
 
-See also Note [Matching coercion variables] in GHC.Core.Unify.
+See also
+* Note [Coercion arguments]
+* Note [Matching coercion variables] in GHC.Core.Unify.
+* Note [Simplifying rules] in GHC.Core.Rules: sm_eta_expand is
+  switched off in the template of a RULE
 -}
 
 ----------------------
@@ -833,8 +848,8 @@ match :: RuleMatchEnv
 
 -- Invariant (TypeInv): if matching succeeds, then
 --                      typeof( subst(template) ) = typeof( target |> mco )
---     But this is not a pre-condition; the types of template and target
---      may differ, see the (App e1 e2) case
+--     But this is /not/ a pre-condition! The types of template and target
+--     may differ, see the (App e1 e2) case
 --
 -- Invariant (CoInv):   if mco :: ty ~ ty, then it is MRefl, not MCo co
 --                      See Note [Cancel reflexive casts]
@@ -859,11 +874,17 @@ match renv subst e@(Tick t e1) e2 mco
   | otherwise
   = pprPanic "Tick in rule" (ppr e)
 
------------------------- Types and coercions ---------------------
+------------------------ Types ---------------------
 match renv subst (Type ty1) (Type ty2) _mco
   = match_ty renv subst ty1 ty2
-match renv subst (Coercion co1) (Coercion co2) _mco
+
+------------------------ Coercions ---------------------
+-- See Note [Coercion argument] for why this isn't really right
+match renv subst (Coercion co1) (Coercion co2) MRefl
   = match_co renv subst co1 co2
+  -- The MCo case corresponds to matching  co ~ (co2 |> co3)
+  -- and I have no idea what to do there -- or even if it can occur
+  -- Failing seems the simplest thing to do; it's certainly safe.
 
 ------------------------ Casts ---------------------
 -- See Note [Casts in the template]
@@ -881,8 +902,9 @@ match renv subst (Cast e1 co1) e2 mco
                      MRefl   -> mkRepReflCo (exprType e2)
                      MCo co2 -> co2
        ; subst1 <- match_co renv subst co1 co2
-       ; subst2 <- match_ty renv subst1 (exprType e1) (exprType e2)
-       ; match renv subst2 e1 e2 MRefl }
+         -- If match_co succeeds, then (exprType e1) = (exprType e2)
+         -- Hence the MRefl in the next line
+       ; match renv subst1 e1 e2 MRefl }
 
 ------------------------ Literals ---------------------
 match _ subst (Lit lit1) (Lit lit2) mco
@@ -910,6 +932,8 @@ match renv subst e1 (Var v2) mco  -- Note [Expanding variables]
 ------------------------ Applications ---------------------
 -- Note the match on MRefl!  We fail if there is a cast in the target
 --     (e1 e2) ~ (d1 d2) |> co
+-- See Note [Cancel reflexive casts]: in the Cast equations for 'match'
+-- we agressively ensure that if MCo is reflective, it really is MRefl.
 match renv subst (App f1 a1) (App f2 a2) MRefl
   = do  { subst' <- match renv subst f1 f2 MRefl
         ; match renv subst' a1 a2 MRefl }
@@ -935,11 +959,11 @@ match renv subst e1 (Let bind e2) mco
 
 ------------------------  Lambdas ---------------------
 match renv subst (Lam x1 e1) e2 mco
-  | Just (x2, e2, ts) <- exprIsLambda_maybe (rvInScopeEnv renv) (mkCastMCo e2 mco)
+  | Just (x2, e2', ts) <- exprIsLambda_maybe (rvInScopeEnv renv) (mkCastMCo e2 mco)
     -- See Note [Lambdas in the template]
   = let renv'  = rnMatchBndr2 renv x1 x2
         subst' = subst { rs_binds = rs_binds subst . flip (foldr mkTick) ts }
-    in  match renv' subst' e1 e2 MRefl
+    in  match renv' subst' e1 e2' MRefl
 
 match renv subst e1 e2@(Lam {}) mco
   | Just (renv', e2') <- eta_reduce renv e2  -- See Note [Eta reduction in the target]
@@ -988,11 +1012,11 @@ match renv (tv_subst, id_subst, binds) e1
     case_wrap rhs' = Case scrut case_bndr ty [(con, alt_bndrs, rhs')]
 -}
 
-match renv subst (Case e1 x1 ty1 alts1) (Case e2 x2 ty2 alts2)
+match renv subst (Case e1 x1 ty1 alts1) (Case e2 x2 ty2 alts2) mco
   = do  { subst1 <- match_ty renv subst ty1 ty2
-        ; subst2 <- match renv subst1 e1 e2
+        ; subst2 <- match renv subst1 e1 e2 MRefl
         ; let renv' = rnMatchBndr2 renv x1 x2
-        ; match_alts renv' subst2 alts1 alts2   -- Alts are both sorted
+        ; match_alts renv' subst2 alts1 alts2 mco   -- Alts are both sorted
         }
 
 -- Everything else fails
@@ -1096,7 +1120,13 @@ match_co :: RuleMatchEnv
          -> Coercion
          -> Coercion
          -> Maybe RuleSubst
--- See Note [Casts in the template]
+-- We only match if the template is a coercion variable or Refl:
+--   see Note [Casts in the template]
+-- Like 'match' it is /not/ guaranteed that
+--     coercionKind template  =  coercionKind target
+-- But if match_co succeeds, it /is/ guaranteed that
+--     coercionKind (subst template) = coercionKind target
+
 match_co renv subst co1 co2
   | Just cv <- getCoVar_maybe co1
   = match_var renv subst cv (Coercion co2)
