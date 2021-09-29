@@ -60,6 +60,8 @@ import GHC.Utils.Panic
 import GHC.Utils.Panic.Plain
 import GHC.Utils.Trace
 
+import GHC.Exts
+
 import Control.Applicative ( (<|>) )
 import Control.Monad ( zipWithM )
 import Data.List ( unzip4 )
@@ -579,7 +581,7 @@ wantToUnboxArg fam_envs ty (n :* sd)
   , Just (Unboxed, ds) <- viewProd arity sd -- See Note [Boxity Analysis]
   -- NB: No strictness or evaluatedness checks here. That is done by
   -- 'finaliseBoxity'!
-  = Unbox (DataConPatContext dc tc_args co) ds
+  = Unbox (DataConPatContext dc tc_args co) (toList ds)
 
   | otherwise
   = StopUnboxing
@@ -1456,9 +1458,9 @@ finaliseBoxity env in_inl_fun ty dmd = go NotMarkedStrict ty dmd
 
     -- See Note [Unboxing evaluated arguments]
     zip_go_with_marks dc arg_tys ds = case dataConWrapId_maybe dc of
-      Nothing -> strictZipWith  (go NotMarkedStrict)          arg_tys ds
+      Nothing -> fromList $ strictZipWith  (go NotMarkedStrict)          arg_tys ds
                     -- Shortcut when DataCon worker=wrapper
-      Just _  -> strictZipWith3 go  (dataConRepStrictness dc) arg_tys ds
+      Just _  -> fromList $ strictZipWith3 go  (dataConRepStrictness dc) arg_tys ds
 
 {-
 ************************************************************************

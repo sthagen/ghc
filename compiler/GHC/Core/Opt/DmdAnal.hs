@@ -43,6 +43,7 @@ import GHC.Data.Maybe         ( isJust )
 import GHC.Builtin.PrimOps
 import GHC.Builtin.Types.Prim ( realWorldStatePrimTy )
 import GHC.Types.Unique.Set
+import GHC.Exts ( IsList(..) )
 
 import GHC.Utils.Trace
 _ = pprTrace -- Tired of commenting out the import all the time
@@ -444,7 +445,7 @@ dmdAnal' env dmd (Case scrut case_bndr ty [Alt alt bndrs rhs])
           | DataAlt _ <- alt
           -- See Note [Demand on the scrutinee of a product case]
           -- See Note [Demand on case-alternative binders]
-          , (!scrut_sd, fld_dmds') <- addCaseBndrDmd case_bndr_sd fld_dmds
+          , (!scrut_sd, fld_dmds') <- addCaseBndrDmd case_bndr_sd (fromList fld_dmds)
           , let !bndrs' = setBndrsDemandInfo bndrs fld_dmds'
           = (bndrs', scrut_sd)
           | otherwise
@@ -574,11 +575,11 @@ addCaseBndrDmd :: SubDemand -- On the case binder
                             -- and final demands for the components of the constructor
 addCaseBndrDmd case_sd fld_dmds
   | Just (_, ds) <- viewProd (length fld_dmds) scrut_sd
-  = (scrut_sd, ds)
+  = (scrut_sd, toList ds)
   | otherwise
   = pprPanic "was a call demand" (ppr case_sd $$ ppr fld_dmds) -- See the Precondition
   where
-    scrut_sd = case_sd `plusSubDmd` mkProd Unboxed fld_dmds
+    scrut_sd = case_sd `plusSubDmd` mkProd Unboxed (fromList fld_dmds)
 
 {-
 Note [Analysing with absent demand]

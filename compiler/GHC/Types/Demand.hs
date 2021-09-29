@@ -1,6 +1,8 @@
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE BinaryLiterals #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE OverloadedLists #-}
 
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
@@ -88,6 +90,10 @@ import GHC.Types.Var.Set
 import GHC.Types.Unique.FM
 import GHC.Types.Basic
 import GHC.Data.Maybe   ( orElse )
+import GHC.Data.SArr ( SArr, Slice(..), slice )
+import qualified GHC.Data.SArr as SArr
+
+import GHC.Exts ( IsList(..) )
 
 import GHC.Core.Type    ( Type )
 import GHC.Core.TyCon   ( isNewTyCon, isClassTyCon )
@@ -689,7 +695,7 @@ data SubDemand
   -- expressed with 'Poly'.
   -- Used only for values of function type. Use the smart constructor 'mkCall'
   -- whenever possible!
-  | Prod !Boxity ![Demand]
+  | Prod !Boxity !(SArr.SArr Demand)
   -- ^ @Prod b ds@ describes the evaluation context of a case scrutinisation
   -- on an expression of product type, where the product components are
   -- evaluated according to @ds@. The 'Boxity' @b@ says whether or not the box
@@ -727,27 +733,27 @@ polyFieldDmd n    = C_1N :* Poly Boxed C_1N & assertPpr (isCardNonOnce n) (ppr n
 --   * Rewrites @!P(L,L)@ (e.g., arguments @Unboxed@, @[L,L]@) to @!L@
 --   * Does not rewrite @P(1L)@, @P(L!L)@ or @P(L,A)@
 --
-mkProd :: Boxity -> [Demand] -> SubDemand
+mkProd :: Boxity -> SArr Demand -> SubDemand
 mkProd b ds
-  | all (== AbsDmd) ds = Poly b C_00
-  | all (== BotDmd) ds = Poly b C_10
-  | dmd@(n :* Poly Boxed m):_ <- ds  -- don't rewrite P(L!L)
+  | SArr.all (== AbsDmd) ds = Poly b C_00
+  | SArr.all (== BotDmd) ds = Poly b C_10
+  | dmd@(n :* Poly Boxed m):<|_ <- slice ds  -- don't rewrite P(L!L)
   , n == m                           -- don't rewrite P(1L)
-  , all (== dmd) ds                  -- don't rewrite P(L,A)
+  , SArr.all (== dmd) ds                  -- don't rewrite P(L,A)
   = Poly b n
   | otherwise          = Prod b ds
 
 -- | @viewProd n sd@ interprets @sd@ as a 'Prod' of arity @n@, expanding 'Poly'
 -- demands as necessary.
-viewProd :: Arity -> SubDemand -> Maybe (Boxity, [Demand])
+viewProd :: Arity -> SubDemand -> Maybe (Boxity, SArr Demand)
 -- It's quite important that this function is optimised well;
 -- it is used by lubSubDmd and plusSubDmd.
 viewProd n (Prod b ds)
-  | ds `lengthIs` n = Just (b, ds)
+  | length ds == n = Just (b, ds)
 -- Note the strict application to replicate: This makes sure we don't allocate
 -- a thunk for it, inlines it and lets case-of-case fire at call sites.
 viewProd n (Poly b card)
-  | let !ds = replicate n $! polyFieldDmd card
+  | let !ds = SArr.replicate n $! polyFieldDmd card
   = Just (b, ds)
 viewProd _ _
   = Nothing
@@ -790,10 +796,10 @@ lubSubDmd d1                  (Poly Unboxed C_10) = d1
 -- Handle Prod
 lubSubDmd (Prod b1 ds1) (Poly b2 n2)
   | let !d = polyFieldDmd n2
-  = mkProd (lubBoxity b1 b2) (strictMap (lubDmd d) ds1)
+  = mkProd (lubBoxity b1 b2) (SArr.strictMap (lubDmd d) ds1)
 lubSubDmd (Prod b1 ds1) (Prod b2 ds2)
-  | equalLength ds1 ds2
-  = mkProd (lubBoxity b1 b2) (strictZipWith lubDmd ds1 ds2)
+  | length ds1 == length ds2
+  = mkProd (lubBoxity b1 b2) (SArr.strictZipWith lubDmd ds1 ds2)
 -- Handle Call
 lubSubDmd (Call n1 sd1) sd2@(Poly _ n2)
   -- See Note [Call demands are relative]
@@ -819,10 +825,10 @@ plusSubDmd d1                  (Poly Unboxed C_00) = d1
 -- Handle Prod
 plusSubDmd (Prod b1 ds1) (Poly b2 n2)
   | let !d = polyFieldDmd n2
-  = mkProd (plusBoxity b1 b2) (strictMap (plusDmd d) ds1)
+  = mkProd (plusBoxity b1 b2) (SArr.strictMap (plusDmd d) ds1)
 plusSubDmd (Prod b1 ds1) (Prod b2 ds2)
-  | equalLength ds1 ds2
-  = mkProd (plusBoxity b1 b2) (strictZipWith plusDmd ds1 ds2)
+  | length ds1 == length ds2
+  = mkProd (plusBoxity b1 b2) (SArr.strictZipWith plusDmd ds1 ds2)
 -- Handle Call
 plusSubDmd (Call n1 sd1) sd2@(Poly _ n2)
   -- See Note [Call demands are relative]
@@ -847,7 +853,7 @@ multSubDmd C_10 (Poly _ n)   = if isStrict n then botSubDmd else seqSubDmd
 multSubDmd C_10 (Call n _)   = if isStrict n then botSubDmd else seqSubDmd
 multSubDmd n    (Poly b m)   = Poly b (multCard n m)
 multSubDmd n    (Call n' sd) = mkCall (multCard n n') sd -- See Note [Call demands are relative]
-multSubDmd n    (Prod b ds)  = mkProd b (strictMap (multDmd n) ds)
+multSubDmd n    (Prod b ds)  = mkProd b (SArr.strictMap (multDmd n) ds)
 
 multDmd :: Card -> Demand -> Demand
 -- The first two lines compute the same result as the last line, but won't
@@ -938,7 +944,7 @@ strictifyDictDmd :: Type -> Demand -> Demand
 strictifyDictDmd ty (n :* Prod b ds)
   | not (isAbs n)
   , Just field_tys <- as_non_newtype_dict ty
-  = C_1N :* mkProd b (zipWith strictifyDictDmd field_tys ds)
+  = C_1N :* mkProd b (SArr.zipWith strictifyDictDmd (fromList field_tys) ds)
       -- main idea: ensure it's strict
   where
     -- | Return a TyCon and a list of field types if the given
@@ -1918,7 +1924,7 @@ dmdTransformSig (DmdSig dmd_ty@(DmdType _ arg_ds _)) sd
 -- demands into the constructor arguments.
 dmdTransformDataConSig :: Arity -> DmdTransformer
 dmdTransformDataConSig arity sd = case go arity sd of
-  Just dmds -> DmdType emptyDmdEnv dmds topDiv
+  Just dmds -> DmdType emptyDmdEnv (toList dmds) topDiv
   Nothing   -> nopDmdType -- Not saturated
   where
     go 0 sd             = snd <$> viewProd arity sd
@@ -1935,7 +1941,7 @@ dmdTransformDictSelSig (DmdSig (DmdType _ [_ :* prod] _)) call_sd
    | (n, sd') <- peelCallDmd call_sd
    , Prod _ sig_ds <- prod
    = multDmdType n $
-     DmdType emptyDmdEnv [C_11 :* mkProd Unboxed (map (enhance sd') sig_ds)] topDiv
+     DmdType emptyDmdEnv [C_11 :* mkProd Unboxed (SArr.map (enhance sd') sig_ds)] topDiv
    | otherwise
    = nopDmdType -- See Note [Demand transformer for a dictionary selector]
   where
@@ -2105,7 +2111,7 @@ kill_usage_sd :: KillFlags -> SubDemand -> SubDemand
 kill_usage_sd kfs (Call n sd)
   | kf_called_once kfs        = mkCall (lubCard C_1N n) (kill_usage_sd kfs sd)
   | otherwise                 = mkCall n                (kill_usage_sd kfs sd)
-kill_usage_sd kfs (Prod b ds) = mkProd b (map (kill_usage kfs) ds)
+kill_usage_sd kfs (Prod b ds) = mkProd b (SArr.map (kill_usage kfs) ds)
 kill_usage_sd _   sd          = sd
 
 {- *********************************************************************
@@ -2129,10 +2135,11 @@ trimToType (n :* sd) ts
   = n :* go sd ts
   where
     go (Prod b ds) (TsProd tss)
-      | equalLength ds tss    = mkProd b (zipWith trimToType ds tss)
-    go (Call n sd) (TsFun ts) = mkCall n (go sd ts)
-    go sd@Poly{}   _          = sd
-    go _           _          = topSubDmd
+      | length ds == length tss' = mkProd b (SArr.zipWith trimToType ds tss') where
+        tss' = fromList tss
+    go (Call n sd) (TsFun ts)    = mkCall n (go sd ts)
+    go sd@Poly{}   _             = sd
+    go _           _             = topSubDmd
 
 -- | Drop all boxity
 trimBoxity :: Demand -> Demand
@@ -2141,7 +2148,7 @@ trimBoxity BotDmd    = BotDmd
 trimBoxity (n :* sd) = n :* go sd
   where
     go (Poly _ n)  = Poly Boxed n
-    go (Prod _ ds) = mkProd Boxed (map trimBoxity ds)
+    go (Prod _ ds) = mkProd Boxed (SArr.map trimBoxity ds)
     go (Call n sd) = mkCall n $ go sd
 
 {-
@@ -2158,12 +2165,15 @@ seqDemand BotDmd    = ()
 seqDemand (_ :* sd) = seqSubDemand sd
 
 seqSubDemand :: SubDemand -> ()
-seqSubDemand (Prod _ ds) = seqDemandList ds
+seqSubDemand (Prod _ ds) = seqDemandList' ds
 seqSubDemand (Call _ sd) = seqSubDemand sd
 seqSubDemand (Poly _ _)  = ()
 
 seqDemandList :: [Demand] -> ()
 seqDemandList = foldr (seq . seqDemand) ()
+
+seqDemandList' :: (SArr Demand) -> ()
+seqDemandList' = foldr (seq . seqDemand) ()
 
 seqDmdType :: DmdType -> ()
 seqDmdType (DmdType env ds res) =
@@ -2264,11 +2274,11 @@ instance Outputable Demand where
 instance Outputable SubDemand where
   ppr (Poly b sd) = pp_boxity b <> ppr sd
   ppr (Call n sd) = char 'C' <> ppr n <> parens (ppr sd)
-  ppr (Prod b ds) = pp_boxity b <> char 'P' <> parens (fields ds)
+  ppr (Prod b ds) = pp_boxity b <> char 'P' <> parens (fields (slice ds))
     where
-      fields []     = empty
-      fields [x]    = ppr x
-      fields (x:xs) = ppr x <> char ',' <> fields xs
+      fields Empty       = empty
+      fields (x:<|Empty) = ppr x
+      fields (x:<|xs)    = ppr x <> char ',' <> fields xs
 
 pp_boxity :: Boxity -> SDoc
 pp_boxity Unboxed = char '!'

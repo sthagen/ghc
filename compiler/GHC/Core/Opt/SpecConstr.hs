@@ -69,7 +69,7 @@ import GHC.Utils.Trace
 
 import GHC.Builtin.Names ( specTyConKey )
 
-import GHC.Exts( SpecConstrAnnotation(..) )
+import GHC.Exts( SpecConstrAnnotation(..), IsList(..) )
 import GHC.Serialized   ( deserializeWithData )
 
 import Control.Monad    ( zipWithM )
@@ -1848,7 +1848,7 @@ calcSpecInfo fn (CP { cp_qvars = qvars, cp_args = pats }) extra_bndrs
     go_one env (_n :* cd) e -- NB: _n does not have to be strict
       | (Var _, args) <- collectArgs e
       , Just (_b, ds) <- viewProd (length args) cd -- TODO: We may want to look at boxity _b, though...
-      = go env ds args
+      = go env (toList ds) args
     go_one env _  _ = env
 
 
