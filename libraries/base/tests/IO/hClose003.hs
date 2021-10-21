@@ -27,9 +27,9 @@ main = do
   hIsOpen hwrite >>= print
 
 showPossibleException :: IO () -> IO ()
-showPossibleException f = do 
+showPossibleException f = do
   e <- try f
-  putStrLn (sanitise (show (e :: Either SomeException ())))
+  putStrLn (sanitise (show (e :: Either SomeExceptionWithLocation ())))
  where
   -- we don't care which file descriptor it is
   sanitise [] = []
@@ -37,6 +37,6 @@ showPossibleException f = do
   sanitise' [] = []
   sanitise' (x:xs) = if isDigit x then (sanitise' xs) else (x:(sanitise xs))
 
-naughtyClose h = 
+naughtyClose h =
   withHandle_ "naughtyClose" h $ \ Handle__{haDevice=dev} ->
      IODevice.close dev
