@@ -217,6 +217,7 @@ mplusIO m n = m `catchException` \ (_ :: IOError) -> n
 -- raise an exception within the 'IO' monad because it guarantees
 -- ordering with respect to other 'IO' operations, whereas 'throw'
 -- does not.
+-- TODO: Add backtraces here!
 throwIO :: Exception e => e -> IO a
 throwIO e = IO (raiseIO# (toException e))
 

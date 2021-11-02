@@ -27,7 +27,7 @@ import Data.Maybe (catMaybes)
 import Foreign
 import GHC.Conc.Sync
 import GHC.Exts (Int (I#), RealWorld, StackSnapshot#, ThreadId#, Array#, sizeofArray#, indexArray#, State#, StablePtr#)
-import GHC.IO (IO (..))
+import {-# SOURCE #-} GHC.IO (IO (..))
 import GHC.Stack.CCS (InfoProv (..), InfoProvEnt, ipeProv, peekInfoProv)
 import GHC.Stable
 

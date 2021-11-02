@@ -2,6 +2,7 @@
 {-# LANGUAGE NoImplicitPrelude
            , ExistentialQuantification
            , MagicHash
+           , UnboxedTuples
            , RecordWildCards
            , PatternSynonyms
   #-}
@@ -40,6 +41,7 @@ import GHC.Stack.Types
 import GHC.OldList
 import GHC.Prim
 import GHC.IO.Unsafe
+import {-# SOURCE #-} GHC.Exception.Backtrace (collectBacktraces)
 import {-# SOURCE #-} GHC.Stack.CCS
 import GHC.Exception.Type
 
@@ -50,7 +52,11 @@ import GHC.Exception.Type
 -- stays exception-free.
 throw :: forall (r :: RuntimeRep). forall (a :: TYPE r). forall e.
          Exception e => e -> a
-throw e = raise# (toException e)
+throw e = runRW# (\s0 ->
+    case unIO collectBacktraces s0 of
+      (# _, bts #) ->
+        let e' = foldr addBacktrace (toException e) bts
+        in raise# e' )
 
 -- | This is thrown when the user calls 'error'. The first @String@ is the
 -- argument given to 'error', second @String@ is the location.

@@ -12,5 +12,10 @@ module GHC.Stack.CCS where
 -}
 
 import GHC.Base
+import GHC.Ptr
 
 currentCallStack :: IO [String]
+
+getCurrentCCS :: dummy -> IO (Ptr CostCentreStack)
+
+data CostCentreStack

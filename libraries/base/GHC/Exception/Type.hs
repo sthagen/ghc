@@ -21,6 +21,7 @@
 module GHC.Exception.Type
        ( Exception(..)    -- Class
        , SomeExceptionWithLocation(..), SomeException, ArithException(..)
+        , addBacktrace
        , divZeroException, overflowException, ratioZeroDenomException
        , underflowException
        ) where
@@ -30,13 +31,14 @@ import Data.Typeable (Typeable, cast)
    -- loop: Data.Typeable -> GHC.Err -> GHC.Exception
 import GHC.Base
 import GHC.Show
+import GHC.Exception.Backtrace (Backtrace)
 
 {- |
 The @SomeExceptionWithLocation@ type is the root of the exception type hierarchy.
 When an exception of type @e@ is thrown, behind the scenes it is
 encapsulated in a @SomeExceptionWithLocation@.
 -}
-data SomeExceptionWithLocation = forall e . Exception e => SomeExceptionWithLocation e [String]
+data SomeExceptionWithLocation = forall e . Exception e => SomeExceptionWithLocation e [Backtrace]
 
 type SomeException = SomeExceptionWithLocation
 
@@ -44,6 +46,13 @@ type SomeException = SomeExceptionWithLocation
 instance Show SomeExceptionWithLocation where
     -- TODO: Print backtraces
     showsPrec p (SomeExceptionWithLocation e _) = showsPrec p e
+
+-- | Add a 'Backtrace' to the list of backtraces.
+--
+-- @since 4.16.0.0
+addBacktrace :: Backtrace -> SomeExceptionWithLocation -> SomeExceptionWithLocation
+addBacktrace bt (SomeExceptionWithLocation e bts) =
+    SomeExceptionWithLocation e (bt : bts)
 
 {- |
 Any type that you wish to throw or catch as an exception must be an
