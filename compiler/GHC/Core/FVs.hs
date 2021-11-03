@@ -397,14 +397,31 @@ orphNamesOfCo (SubCo co)            = orphNamesOfCo co
 orphNamesOfCo (AxiomRuleCo _ cs)    = orphNamesOfCos cs
 orphNamesOfCo (HoleCo _)            = emptyNameSet
 
+orphNamesOfDCo :: DCoercion -> NameSet
+orphNamesOfDCo ReflDCo                  = emptyNameSet
+orphNamesOfDCo (GReflRightDCo co)       = orphNamesOfCo co
+orphNamesOfDCo (GReflLeftDCo co)        = orphNamesOfCo co
+orphNamesOfDCo (TyConAppDCo cos)        = orphNamesOfDCos cos
+orphNamesOfDCo (AppDCo co1 co2)         = orphNamesOfDCo co1 `unionNameSet` orphNamesOfDCo co2
+orphNamesOfDCo (ForAllDCo _ kind_co co) = orphNamesOfCo kind_co `unionNameSet` orphNamesOfDCo co
+orphNamesOfDCo (CoVarDCo _)             = emptyNameSet
+orphNamesOfDCo (AxiomInstDCo con)       = orphNamesOfCoCon con
+orphNamesOfDCo StepsDCo{}               = emptyNameSet
+orphNamesOfDCo (TransDCo co1 co2)       = orphNamesOfDCo co1 `unionNameSet` orphNamesOfDCo co2
+orphNamesOfDCo (CoDCo co)               = orphNamesOfCo co
+
 orphNamesOfProv :: UnivCoProvenance -> NameSet
 orphNamesOfProv (PhantomProv co)    = orphNamesOfCo co
 orphNamesOfProv (ProofIrrelProv co) = orphNamesOfCo co
+orphNamesOfProv (DCoProv dco)       = orphNamesOfDCo dco
 orphNamesOfProv (PluginProv _)      = emptyNameSet
 orphNamesOfProv (CorePrepProv _)    = emptyNameSet
 
 orphNamesOfCos :: [Coercion] -> NameSet
 orphNamesOfCos = orphNamesOfThings orphNamesOfCo
+
+orphNamesOfDCos :: [DCoercion] -> NameSet
+orphNamesOfDCos = orphNamesOfThings orphNamesOfDCo
 
 orphNamesOfCoCon :: CoAxiom br -> NameSet
 orphNamesOfCoCon (CoAxiom { co_ax_tc = tc, co_ax_branches = branches })

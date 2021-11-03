@@ -53,6 +53,7 @@ import GHC.Core.TyCon as TyCon
 import GHC.Core.Coercion.Axiom
 import GHC.Core.Unify
 import GHC.Core.InstEnv      ( instanceDFunId )
+import GHC.Core.FamInstEnv   ( chooseBranch )
 import GHC.Core.Coercion.Opt ( checkAxInstCo )
 import GHC.Core.Opt.Arity    ( typeArity )
 
@@ -821,6 +822,7 @@ special behaviour.  For example, this is /not/ fine:
 type LintedType     = Type
 type LintedKind     = Kind
 type LintedCoercion = Coercion
+type LintedDCoercion = DCoercion
 type LintedTyCoVar  = TyCoVar
 type LintedId       = Id
 
@@ -2102,7 +2104,7 @@ lintCoercion co@(UnivCo prov r ty1 ty2)
        ; ty2' <- lintType ty2
        ; let k1 = typeKind ty1'
              k2 = typeKind ty2'
-       ; prov' <- lint_prov k1 k2 prov
+       ; prov' <- lint_prov k1 ty1' k2 ty2' prov
 
        ; when (r /= Phantom && classifiesTypeWithValues k1
                             && classifiesTypeWithValues k2)
@@ -2161,21 +2163,24 @@ lintCoercion co@(UnivCo prov r ty1 ty2)
                 _          -> return ()
             }
 
-     lint_prov k1 k2 (PhantomProv kco)
+     lint_prov k1 _ k2 _ (PhantomProv kco)
        = do { kco' <- lintStarCoercion kco
             ; lintRole co Phantom r
             ; check_kinds kco' k1 k2
             ; return (PhantomProv kco') }
 
-     lint_prov k1 k2 (ProofIrrelProv kco)
+     lint_prov k1 _ k2 _ (ProofIrrelProv kco)
        = do { lintL (isCoercionTy ty1) (mkBadProofIrrelMsg ty1 co)
             ; lintL (isCoercionTy ty2) (mkBadProofIrrelMsg ty2 co)
             ; kco' <- lintStarCoercion kco
             ; check_kinds kco k1 k2
             ; return (ProofIrrelProv kco') }
 
-     lint_prov _ _ prov@(PluginProv _)   = return prov
-     lint_prov _ _ prov@(CorePrepProv _) = return prov
+     lint_prov _k1 ty1 _k2 ty2 (DCoProv dco)
+        = DCoProv <$> lintDCoercion r ty1 ty2 dco
+
+     lint_prov _ _ _ _ prov@(PluginProv _)   = return prov
+     lint_prov _ _ _ _ prov@(CorePrepProv _) = return prov
 
      check_kinds kco k1 k2
        = do { let Pair k1' k2' = coercionKind kco
@@ -2340,6 +2345,172 @@ lintCoercion this@(AxiomRuleCo ax cos)
 lintCoercion (HoleCo h)
   = do { addErrL $ text "Unfilled coercion hole:" <+> ppr h
        ; lintCoercion (CoVarCo (coHoleCoVar h)) }
+
+
+lintDCoercion :: Role -> LintedType -> LintedType -> DCoercion -> LintM LintedDCoercion
+lintDCoercion r ty1 ty2 dco
+  = do { (co, ty) <- expandDCoercion r ty1 dco
+       ; let v@(Pair ty1' ty2', r') = coercionKindRole co
+       ; chk co ty v "Role mismatch"       $ r == r'
+       ; chk co ty v "LHS type mismatch"   $ ty1 `eqType` ty1'
+       ; chk co ty v "RHS type mismatch 1" $ ty2 `eqType` ty2'
+       ; chk co ty v "RHS type mismatch 2" $ ty2' `eqType` ty
+       ; pure (CoDCo co) -- AMG TODO: is returning a Coercion okay here?
+       }
+  where
+    chk :: Coercion -> Type -> (Pair Type, Role) -> String -> Bool -> LintM ()
+    chk co ty (Pair ty1' ty2', r') s ok = unless ok $ addErrL $
+        hang (text "Invalid DCoercion: " <+> text s) 2 $ vcat
+           [ text "Given role:       " <+> ppr r
+           , text "Given LHS type:   " <+> ppr ty1
+           , text "Given RHS type:   " <+> ppr ty2
+           , text "DCoercion:        " <+> ppr dco
+           , text "Expanded RHS type:" <+> ppr ty
+           , text "Coercion role:    " <+> ppr r'
+           , text "Coercion LHS type:" <+> ppr ty1'
+           , text "Coercion RHS type:" <+> ppr ty2'
+           , text "Coercion:         " <+> ppr co
+           ]
+
+-- AMG TODO: clean up the following
+expandDCoercion :: Role -> LintedType -> DCoercion -> LintM (LintedCoercion, Type)
+
+expandDCoercion r ty dco
+  | Just ty' <- coreView ty = expandDCoercion r ty' dco
+
+expandDCoercion r l_ty ReflDCo = pure (mkReflCo r l_ty, l_ty)
+
+expandDCoercion r l_ty (GReflRightDCo co)
+  = do co' <- lintCoercion co
+       pure (mkGReflCo r l_ty (MCo co'), mkCastTy l_ty co')
+
+expandDCoercion r l_ty (GReflLeftDCo co)
+  = do co' <- lintCoercion (mkSymCo co)
+       pure (mkGReflCo r l_ty (MCo co'), mkCastTy l_ty co')
+
+expandDCoercion r l_ty (TyConAppDCo dcos)
+  | Just (tc, l_tys) <- splitTyConApp_maybe l_ty = do
+    (cos, tys) <- unzip <$> expandDCoercions (tyConRolesX r tc) l_tys dcos
+    pure (mkTyConAppCo r tc cos, mkTyConApp tc tys)
+  | otherwise = failWithL (text "TyConAppDCo where type is not a TyCon:" <+> ppr l_ty)
+
+expandDCoercion r l_ty (AppDCo dco1 dco2)
+  | Just (l_ty1, l_ty2) <-splitAppTy_maybe l_ty = do
+    (co1, ty1) <- expandDCoercion r l_ty1 dco1
+    (co2, ty2) <- expandDCoercion Nominal l_ty2 dco2  -- AMG TODO if r is Phantom, might be Nominal or Phantom?
+    pure (AppCo co1 co2, mkAppTy ty1 ty2)
+  | otherwise = failWithL (text "AppDCo where type is not an AppTy:" <+> ppr l_ty)
+
+expandDCoercion r l_ty co@(ForAllDCo tcv kco body_dco)
+  | not (isTyCoVar tcv)
+  = failWithL (text "Non tyco binder in ForAllDCo:" <+> ppr co)
+  | otherwise
+  = do { kco' <- lintStarCoercion kco
+       ; lintTyCoBndr tcv $ \tcv' ->
+        case splitForAllTyCoVar_maybe l_ty of
+          Nothing -> failWithL (text "ForAllDCo where type is not a ForAllTy: " <+> ppr l_ty <+> ppr co)
+          Just (tcv'', body_ty) -> do { in_scope <- getInScope
+                                        -- AMG TODO: is there a cleaner way of doing this?
+                                      ; let body_ty' = substTyWithInScope in_scope [tcv''] [mkTyVarTy tcv'] body_ty
+                                      ; lintForAllBody tcv' body_ty'
+                                      ; (body_co, rhs_ty) <- expandDCoercion r body_ty' body_dco
+                                      ; lintForAllBody tcv' rhs_ty -- AMG TODO: check anything else about rhs_ty?
+                                      ; let co' = ForAllCo tcv' kco' body_co
+                                      -- AMG TODO: if CoVar, check occurs only in Refl/GRefl?
+                                      ; pure (co', coercionRKind co')
+                                      } }
+
+expandDCoercion r _ (CoVarDCo v) = expandTo r (CoVarCo v)
+
+expandDCoercion r l_ty dco@(AxiomInstDCo ax)
+  | r == Phantom = expandDCoercion Representational l_ty dco
+     -- AMG TODO: think about better fix to the above;
+     -- role could be Phantom because the coercion was downgraded,
+     -- maybe change the following to check role <= rather than exact matches
+
+  | Just (tc, tys) <- splitTyConApp_maybe l_ty
+  , case r of
+      Representational -> isOpenFamilyTyCon     tc
+      _                -> isOpenTypeFamilyTyCon tc
+  , coAxiomTyCon ax == tc
+  , let ax' = toUnbranchedAxiom ax
+  , let branch = coAxiomSingleBranch ax'
+  , Just subst <- tcMatchTys (coAxBranchLHS branch) tys
+  , let inst_tys = substTyVars subst (coAxBranchTyVars branch) -- AMG TODO: need to handle oversaturation here?
+  , let inst_cos = substCoVars subst (coAxBranchCoVars branch)
+  , let co = mkUnbranchedAxInstCo r ax' inst_tys inst_cos
+  = pure (co, coercionRKind co)
+
+  -- AMG TODO: don't need the ax/ind for this case after all?
+  -- have different evidence for open TFs (store a CoAxiom Unbranched),
+  -- closed TFs/newtypes (no need to store anything)
+  | Just (tc, tys) <- splitTyConApp_maybe l_ty
+  , Just ax' <- isClosedSynFamilyTyConWithAxiom_maybe tc
+  , ax == ax'
+  , Just (ind, inst_tys, inst_cos) <- chooseBranch ax tys
+  , let co = mkAxInstCo r ax ind inst_tys inst_cos
+  = pure (co, coercionRKind co)
+
+  -- AMG TODO: drop this case?
+  | Just (tc, tys) <- splitTyConApp_maybe l_ty
+  , Just (ty, co) <- instNewTyCon_maybe tc tys
+  , r == Representational
+  = pure (co, ty)
+
+  | otherwise = failWithL (text "Bad AxiomInstDCo: " <+> ppr r <+> ppr l_ty <+> ppr dco)
+
+expandDCoercion r l_ty (StepsDCo 0) = pure (mkReflCo r l_ty, l_ty)
+
+-- AMG TODO: factor out a function to check StepsDCo...
+expandDCoercion r l_ty dco@(StepsDCo n)
+  | Just (tc, tys) <- splitTyConApp_maybe l_ty
+  , Just ax <- isClosedSynFamilyTyConWithAxiom_maybe tc
+  , Just (ind, inst_tys, inst_cos) <- chooseBranch ax tys
+  , let co = mkAxInstCo r ax ind inst_tys inst_cos
+  , let ty = coercionRKind co
+  = do (co', ty') <- expandDCoercion r ty (StepsDCo (n-1))
+       pure (co `mkTransCo` co', ty')
+
+  -- AMG TODO: drop this case?
+  | Just (tc, tys) <- splitTyConApp_maybe l_ty
+  , Just (ty, co) <- instNewTyCon_maybe tc tys
+  , r == Representational
+  =do (co', ty') <- expandDCoercion r ty (StepsDCo (n-1))
+      pure (co `mkTransCo` co', ty')
+
+  | Just (tc, tys) <- splitTyConApp_maybe l_ty
+  , Just sf <- isBuiltInSynFamTyCon_maybe tc
+  , Just (ax, ts, ty) <- sfMatchFam sf tys
+  , r == coaxrRole ax
+  , let co = mkAxiomRuleCo ax (zipWith mkReflCo (coaxrAsmpRoles ax) ts)
+
+    -- AMG TODO: deduplicate with reduceTyFamApp_maybe?
+  = do (co', ty') <- expandDCoercion r ty (StepsDCo (n-1))
+       pure (co `mkTransCo` co', ty')
+
+  | otherwise = failWithL (text "Bad AxiomRuleDCo: " <+> ppr r <+> ppr l_ty <+> ppr dco)
+
+expandDCoercion r l_ty (TransDCo dco1 dco2) = do
+    (co1, ty1) <- expandDCoercion r l_ty dco1
+    (co2, ty2) <- expandDCoercion r ty1  dco2
+    pure (TransCo co1 co2, ty2)
+
+expandDCoercion r _ (CoDCo co) = expandTo r co
+
+
+expandTo :: Role -> Coercion -> LintM (LintedCoercion, Type)
+expandTo role co0 = do
+    let co = fromMaybe co0 (downgradeRole_maybe role (coercionRole co0) co0)
+    co' <- lintCoercion co
+    pure (co', coercionRKind co')
+
+
+expandDCoercions :: [Role] -> [Type] -> [DCoercion] -> LintM [(Coercion, Type)]
+expandDCoercions rs tys dcos =
+    -- Not zipWith3Equal because the TyCon might not be fully applied
+    sequence $ zipWith3 expandDCoercion rs tys dcos
+
+
 
 {-
 ************************************************************************

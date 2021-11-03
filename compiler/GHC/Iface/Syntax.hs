@@ -1694,9 +1694,30 @@ freeNamesIfCoercion (IfaceAxiomRuleCo _ax cos)
   -- the axiom is just a string, so we don't count it as a name.
   = fnList freeNamesIfCoercion cos
 
+freeNamesIfDCoercion :: IfaceDCoercion -> NameSet
+freeNamesIfDCoercion IfaceReflDCo          = emptyNameSet
+freeNamesIfDCoercion (IfaceGReflRightDCo co)
+  = freeNamesIfCoercion co
+freeNamesIfDCoercion (IfaceGReflLeftDCo co)
+  = freeNamesIfCoercion co
+freeNamesIfDCoercion (IfaceTyConAppDCo cos)
+  = fnList freeNamesIfDCoercion cos
+freeNamesIfDCoercion (IfaceAppDCo c1 c2)
+  = freeNamesIfDCoercion c1 &&& freeNamesIfDCoercion c2
+freeNamesIfDCoercion (IfaceForAllDCo _ kind_co co)
+  = freeNamesIfCoercion kind_co &&& freeNamesIfDCoercion co
+freeNamesIfDCoercion (IfaceFreeCoVarDCo _)  = emptyNameSet
+freeNamesIfDCoercion (IfaceCoVarDCo _)      = emptyNameSet
+freeNamesIfDCoercion (IfaceAxiomInstDCo ax) = unitNameSet ax
+freeNamesIfDCoercion IfaceStepsDCo{}        = emptyNameSet
+freeNamesIfDCoercion (IfaceTransDCo c1 c2)
+  = freeNamesIfDCoercion c1 &&& freeNamesIfDCoercion c2
+freeNamesIfDCoercion (IfaceCoDCo co) = freeNamesIfCoercion co
+
 freeNamesIfProv :: IfaceUnivCoProv -> NameSet
 freeNamesIfProv (IfacePhantomProv co)    = freeNamesIfCoercion co
 freeNamesIfProv (IfaceProofIrrelProv co) = freeNamesIfCoercion co
+freeNamesIfProv (IfaceDCoProv dco)       = freeNamesIfDCoercion dco
 freeNamesIfProv (IfacePluginProv _)      = emptyNameSet
 freeNamesIfProv (IfaceCorePrepProv _)    = emptyNameSet
 

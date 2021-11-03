@@ -41,6 +41,7 @@ module GHC.Core.TyCo.Subst
         substTys, substScaledTys, substTheta,
         lookupTyVar,
         substCo, substCos, substCoVar, substCoVars, lookupCoVar,
+        substDCo,
         cloneTyVarBndr, cloneTyVarBndrs,
         substVarBndr, substVarBndrs,
         substTyVarBndr, substTyVarBndrs,
@@ -63,6 +64,14 @@ import {-# SOURCE #-} GHC.Core.Coercion
    , mkAxiomInstCo, mkAppCo, mkGReflCo
    , mkInstCo, mkLRCo, mkTyConAppCo
    , mkCoercionType
+   , mkTyConAppDCo
+   , mkAppDCo
+   , mkForAllDCo
+   , mkTransDCo
+   , mkReflDCo
+   , mkGReflRightDCo
+   , mkGReflLeftDCo
+   , mkCoDCo
    , coercionKind, coercionLKind, coVarKindsTypesRole )
 import {-# SOURCE #-} GHC.Core.TyCo.Ppr ( pprTyVar )
 
@@ -632,8 +641,8 @@ isValidTCvSubst (TCvSubst in_scope tenv cenv) =
 
 -- | This checks if the substitution satisfies the invariant from
 -- Note [The substitution invariant].
-checkValidSubst :: HasDebugCallStack => TCvSubst -> [Type] -> [Coercion] -> a -> a
-checkValidSubst subst@(TCvSubst in_scope tenv cenv) tys cos a
+checkValidSubst :: HasDebugCallStack => TCvSubst -> [Type] -> [Coercion] -> [DCoercion] -> a -> a
+checkValidSubst subst@(TCvSubst in_scope tenv cenv) tys cos dcos a
   = assertPpr (isValidTCvSubst subst)
               (text "in_scope" <+> ppr in_scope $$
                text "tenv" <+> ppr tenv $$
@@ -641,13 +650,15 @@ checkValidSubst subst@(TCvSubst in_scope tenv cenv) tys cos a
                text "cenv" <+> ppr cenv $$
                text "cenvFVs" <+> ppr (shallowTyCoVarsOfCoVarEnv cenv) $$
                text "tys" <+> ppr tys $$
-               text "cos" <+> ppr cos) $
+               text "cos" <+> ppr cos $$
+               text "dcos" <+> ppr dcos) $
     assertPpr tysCosFVsInScope
               (text "in_scope" <+> ppr in_scope $$
                text "tenv" <+> ppr tenv $$
                text "cenv" <+> ppr cenv $$
                text "tys" <+> ppr tys $$
                text "cos" <+> ppr cos $$
+               text "dcos" <+> ppr dcos $$
                text "needInScope" <+> ppr needInScope)
     a
   where
@@ -655,7 +666,8 @@ checkValidSubst subst@(TCvSubst in_scope tenv cenv) tys cos a
     -- It's OK to use nonDetKeysUFM here, because we only use this list to
     -- remove some elements from a set
   needInScope = (shallowTyCoVarsOfTypes tys `unionVarSet`
-                 shallowTyCoVarsOfCos cos)
+                 shallowTyCoVarsOfCos cos `unionVarSet`
+                 shallowTyCoVarsOfDCos dcos)
                 `delListFromUniqSet_Directly` substDomain
   tysCosFVsInScope = needInScope `varSetInScope` in_scope
 
@@ -666,7 +678,7 @@ checkValidSubst subst@(TCvSubst in_scope tenv cenv) tys cos a
 substTy :: HasDebugCallStack => TCvSubst -> Type  -> Type
 substTy subst ty
   | isEmptyTCvSubst subst = ty
-  | otherwise             = checkValidSubst subst [ty] [] $
+  | otherwise             = checkValidSubst subst [ty] [] [] $
                             subst_ty subst ty
 
 -- | Substitute within a 'Type' disabling the sanity checks.
@@ -691,12 +703,12 @@ substScaledTyUnchecked subst scaled_ty = mapScaledType (substTyUnchecked subst) 
 substTys :: HasDebugCallStack => TCvSubst -> [Type] -> [Type]
 substTys subst tys
   | isEmptyTCvSubst subst = tys
-  | otherwise = checkValidSubst subst tys [] $ map (subst_ty subst) tys
+  | otherwise = checkValidSubst subst tys [] [] $ map (subst_ty subst) tys
 
 substScaledTys :: HasDebugCallStack => TCvSubst -> [Scaled Type] -> [Scaled Type]
 substScaledTys subst scaled_tys
   | isEmptyTCvSubst subst = scaled_tys
-  | otherwise = checkValidSubst subst (map scaledMult scaled_tys ++ map scaledThing scaled_tys) [] $
+  | otherwise = checkValidSubst subst (map scaledMult scaled_tys ++ map scaledThing scaled_tys) [] [] $
                 map (mapScaledType (subst_ty subst)) scaled_tys
 
 -- | Substitute within several 'Type's disabling the sanity checks.
@@ -786,13 +798,21 @@ lookupTyVar (TCvSubst _ tenv _) tv
   = assert (isTyVar tv )
     lookupVarEnv tenv tv
 
+-- | Substitute within a 'DCoercion'
+-- The substitution has to satisfy the invariants described in
+-- Note [The substitution invariant].
+substDCo :: HasDebugCallStack => TCvSubst -> DCoercion -> DCoercion
+substDCo subst dco
+  | isEmptyTCvSubst subst = dco
+  | otherwise = checkValidSubst subst [] [] [dco] $ subst_dco subst dco
+
 -- | Substitute within a 'Coercion'
 -- The substitution has to satisfy the invariants described in
 -- Note [The substitution invariant].
 substCo :: HasDebugCallStack => TCvSubst -> Coercion -> Coercion
 substCo subst co
   | isEmptyTCvSubst subst = co
-  | otherwise = checkValidSubst subst [] [co] $ subst_co subst co
+  | otherwise = checkValidSubst subst [] [co] [] $ subst_co subst co
 
 -- | Substitute within a 'Coercion' disabling sanity checks.
 -- The problems that the sanity checks in substCo catch are described in
@@ -810,18 +830,23 @@ substCoUnchecked subst co
 substCos :: HasDebugCallStack => TCvSubst -> [Coercion] -> [Coercion]
 substCos subst cos
   | isEmptyTCvSubst subst = cos
-  | otherwise = checkValidSubst subst [] cos $ map (subst_co subst) cos
+  | otherwise = checkValidSubst subst [] cos [] $ map (subst_co subst) cos
 
 subst_co :: TCvSubst -> Coercion -> Coercion
-subst_co subst co
-  = go co
+subst_co = fst . subst_co_dco
+
+subst_dco :: TCvSubst -> DCoercion -> DCoercion
+subst_dco = snd . subst_co_dco
+
+subst_co_dco :: TCvSubst -> (Coercion -> Coercion, DCoercion -> DCoercion)
+subst_co_dco subst = (go, go_dco)
   where
     go_ty :: Type -> Type
     go_ty = subst_ty subst
 
     go_mco :: MCoercion -> MCoercion
     go_mco MRefl    = MRefl
-    go_mco (MCo co) = MCo (go co)
+    go_mco (MCo co) = MCo $! go co
 
     go :: Coercion -> Coercion
     go (Refl ty)             = mkNomReflCo $! (go_ty ty)
@@ -849,8 +874,26 @@ subst_co subst co
                                 in cs1 `seqList` AxiomRuleCo c cs1
     go (HoleCo h)            = HoleCo $! go_hole h
 
-    go_prov (PhantomProv kco)    = PhantomProv (go kco)
-    go_prov (ProofIrrelProv kco) = ProofIrrelProv (go kco)
+    go_dco :: DCoercion -> DCoercion
+    go_dco ReflDCo                = mkReflDCo
+    go_dco (GReflRightDCo co)     = mkGReflRightDCo $! go co
+    go_dco (GReflLeftDCo co)      = mkGReflLeftDCo $! go co
+    go_dco (TyConAppDCo args)     = let args' = map go_dco args
+                                    in  args' `seqList` mkTyConAppDCo args'
+    go_dco (AppDCo co arg)        = (mkAppDCo $! go_dco co) $! go_dco arg
+    go_dco (CoVarDCo cv)          = mkCoDCo $! substCoVar subst cv
+    go_dco dco@AxiomInstDCo{}     = dco
+    go_dco dco@StepsDCo{}         = dco
+    go_dco (TransDCo co1 co2)     = (mkTransDCo $! (go_dco co1)) $! (go_dco co2)
+    go_dco (CoDCo co)             = mkCoDCo $! go co
+    go_dco (ForAllDCo tv kind_co co)
+      = case substForAllCoBndrUnchecked subst tv kind_co of
+         (subst', tv', kind_co') ->
+          ((mkForAllDCo $! tv') $! kind_co') $! subst_dco subst' co
+
+    go_prov (PhantomProv kco)    = PhantomProv $! go kco
+    go_prov (ProofIrrelProv kco) = ProofIrrelProv $! go kco
+    go_prov (DCoProv dco)        = DCoProv $! go_dco dco
     go_prov p@(PluginProv _)     = p
     go_prov p@(CorePrepProv _)   = p
 

@@ -1501,7 +1501,19 @@ collect_cand_qtvs_co :: TcType -- original type at top of recursion; for errors
                      -> VarSet -- bound variables
                      -> CandidatesQTvs -> Coercion
                      -> TcM CandidatesQTvs
-collect_cand_qtvs_co orig_ty bound = go_co
+collect_cand_qtvs_co orig_ty bound dv = fst $ collect_cand_qtvs_co_dco orig_ty bound dv
+
+collect_cand_qtvs_dco :: TcType -- original type at top of recursion; for errors
+                     -> VarSet -- bound variables
+                     -> CandidatesQTvs -> DCoercion
+                     -> TcM CandidatesQTvs
+collect_cand_qtvs_dco orig_ty bound dv = snd $ collect_cand_qtvs_co_dco orig_ty bound dv
+
+collect_cand_qtvs_co_dco :: TcType -- original type at top of recursion; for errors
+                         -> VarSet -- bound variables
+                         -> CandidatesQTvs
+                         -> (Coercion -> TcM CandidatesQTvs, DCoercion -> TcM CandidatesQTvs)
+collect_cand_qtvs_co_dco orig_ty bound dv = (go_co dv, go_dco dv)
   where
     go_co dv (Refl ty)             = collect_cand_qtvs orig_ty True bound dv ty
     go_co dv (GRefl _ ty mco)      = do dv1 <- collect_cand_qtvs orig_ty True bound dv ty
@@ -1534,11 +1546,30 @@ collect_cand_qtvs_co orig_ty bound = go_co
       = do { dv1 <- go_co dv kind_co
            ; collect_cand_qtvs_co orig_ty (bound `extendVarSet` tcv) dv1 co }
 
+
+    go_dco dv ReflDCo                = return dv
+    go_dco dv (GReflRightDCo co)     = go_co dv co
+    go_dco dv (GReflLeftDCo co)      = go_co dv co
+    go_dco dv (TyConAppDCo cos)      = foldlM go_dco dv cos
+    go_dco dv (AppDCo co1 co2)       = foldlM go_dco dv [co1, co2]
+    go_dco dv AxiomInstDCo{}         = return dv
+    go_dco dv StepsDCo{}             = return dv
+    go_dco dv (TransDCo co1 co2)     = foldlM go_dco dv [co1, co2]
+    go_dco dv (CoVarDCo cv)          = go_cv dv cv
+
+    go_dco dv (ForAllDCo tcv kind_co co)
+      = do { dv1 <- go_co dv kind_co
+           ; collect_cand_qtvs_dco orig_ty (bound `extendVarSet` tcv) dv1 co }
+
+    go_dco dv (CoDCo co) = go_co dv co
+
+
     go_mco dv MRefl    = return dv
     go_mco dv (MCo co) = go_co dv co
 
     go_prov dv (PhantomProv co)    = go_co dv co
     go_prov dv (ProofIrrelProv co) = go_co dv co
+    go_prov dv (DCoProv dco)       = go_dco dv dco
     go_prov dv (PluginProv _)      = return dv
     go_prov dv (CorePrepProv _)    = return dv
 

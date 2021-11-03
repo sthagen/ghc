@@ -40,7 +40,7 @@ import GHC.Builtin.Uniques ( mkBuiltinUnique )
 
 import GHC.Hs
 
-import GHC.Core.TyCo.Rep( Type(..), Coercion(..), MCoercion(..), UnivCoProvenance(..) )
+import GHC.Core.TyCo.Rep( Type(..), Coercion(..), MCoercion(..), DCoercion(..), UnivCoProvenance(..) )
 import GHC.Core.Multiplicity
 import GHC.Core.Predicate
 import GHC.Core.Make( rEC_SEL_ERROR_ID )
@@ -151,8 +151,21 @@ synonymTyConsOfType ty
      go_co (SubCo co)             = go_co co
      go_co (AxiomRuleCo _ cs)     = go_co_s cs
 
+     go_dco ReflDCo                = emptyNameEnv
+     go_dco (GReflRightDCo co)     = go_co co
+     go_dco (GReflLeftDCo co)      = go_co co
+     go_dco (TyConAppDCo cs)       = go_dco_s cs
+     go_dco (AppDCo co co')        = go_dco co `plusNameEnv` go_dco co'
+     go_dco (ForAllDCo _ co co')   = go_co co `plusNameEnv` go_dco co'
+     go_dco (CoVarDCo _)           = emptyNameEnv
+     go_dco AxiomInstDCo{}         = emptyNameEnv
+     go_dco StepsDCo{}             = emptyNameEnv
+     go_dco (TransDCo co co')      = go_dco co `plusNameEnv` go_dco co'
+     go_dco (CoDCo co)             = go_co co
+
      go_prov (PhantomProv co)     = go_co co
      go_prov (ProofIrrelProv co)  = go_co co
+     go_prov (DCoProv dco)        = go_dco dco
      go_prov (PluginProv _)       = emptyNameEnv
      go_prov (CorePrepProv _)     = emptyNameEnv
 
@@ -160,6 +173,7 @@ synonymTyConsOfType ty
               | otherwise             = emptyNameEnv
      go_s tys = foldr (plusNameEnv . go) emptyNameEnv tys
      go_co_s cos = foldr (plusNameEnv . go_co) emptyNameEnv cos
+     go_dco_s dcos = foldr (plusNameEnv . go_dco) emptyNameEnv dcos
 
 -- | A monad for type synonym cycle checking, which keeps
 -- track of the TyCons which are known to be acyclic, or

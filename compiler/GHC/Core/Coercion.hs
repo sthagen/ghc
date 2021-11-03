@@ -13,6 +13,7 @@
 module GHC.Core.Coercion (
         -- * Main data type
         Coercion, CoercionN, CoercionR, CoercionP, MCoercion(..), MCoercionN, MCoercionR,
+        DCoercion(..), DCoercionN,
         UnivCoProvenance, CoercionHole(..),
         coHoleCoVar, setCoHoleCoVar,
         LeftOrRight(..),
@@ -45,6 +46,27 @@ module GHC.Core.Coercion (
         castCoercionKind, castCoercionKind1, castCoercionKind2,
         mkFamilyTyConAppCo,
 
+        mkReflDCo,
+        mkAppDCo,
+        mkAppDCos,
+        mkTyConAppDCo,
+        mkFunDCo,
+        mkForAllDCo,
+        mkHomoForAllDCos,
+        mkGReflLeftDCo,
+        mkGReflRightDCo,
+        mkGReflLeftMDCo,
+        mkGReflRightMDCo,
+        mkCoherenceLeftDCo,
+        mkCoherenceRightDCo,
+        mkCoherenceRightMDCo,
+        mkTransDCo,
+        mkDCoCo,
+        mkCoDCo,
+        mkCoVarDCo,
+        castDCoercionKind1,
+        castDCoercionKind2,
+
         mkHeteroCoercionType,
         mkPrimEqPred, mkReprPrimEqPred, mkPrimEqPredRole,
         mkHeteroPrimEqPred, mkHeteroReprPrimEqPred,
@@ -75,6 +97,8 @@ module GHC.Core.Coercion (
         mkHomoForAllMCo, mkFunResMCo, mkPiMCos,
         isReflMCo, checkReflexiveMCo,
 
+        isReflDCo,
+
         -- ** Coercion variables
         mkCoVar, isCoVar, coVarName, setCoVarName, setCoVarUnique,
         isCoVar_maybe,
@@ -82,7 +106,7 @@ module GHC.Core.Coercion (
         -- ** Free variables
         tyCoVarsOfCo, tyCoVarsOfCos, coVarsOfCo,
         tyCoFVsOfCo, tyCoFVsOfCos, tyCoVarsOfCoDSet,
-        coercionSize, anyFreeVarsOfCo,
+        coercionSize, anyFreeVarsOfCo, anyFreeVarsOfDCo,
 
         -- ** Substitution
         CvSubstEnv, emptyCvSubstEnv,
@@ -119,6 +143,8 @@ module GHC.Core.Coercion (
 
         -- * Other
         promoteCoercion, buildCoercion,
+
+        downgradeRole_maybe,
 
         multToCo,
 
@@ -697,6 +723,11 @@ isReflexiveCo_maybe co
   where (Pair ty1 ty2, r) = coercionKindRole co
 
 
+isReflDCo :: DCoercion -> Bool
+isReflDCo ReflDCo = True
+isReflDCo _       = False
+
+
 {-
 %************************************************************************
 %*                                                                      *
@@ -841,6 +872,191 @@ mkAppCos :: Coercion
          -> [Coercion]
          -> Coercion
 mkAppCos co1 cos = foldl' mkAppCo co1 cos
+
+
+
+mkReflDCo :: DCoercion
+mkReflDCo = ReflDCo
+
+mkTyConAppDCo :: [DCoercion] -> DCoercion
+mkTyConAppDCo cos
+  | all isReflDCo cos = mkReflDCo -- See Note [Refl invariant]
+  | otherwise         = TyConAppDCo cos
+
+-- | Build a function 'Coercion' from two other 'Coercion's. That is,
+-- given @co1 :: a ~ b@ and @co2 :: x ~ y@ produce @co :: (a -> x) ~ (b -> y)@.
+-- See Note [Function coercions].
+mkFunDCo :: DCoercionN -> DCoercion -> DCoercion -> DCoercion
+mkFunDCo w co1 co2 = mkTyConAppDCo [w, ReflDCo, ReflDCo, co1, co2] -- AMG TODO: perhaps we should have FunDCo?
+-- AMG TODO: are the ReflDCos correct if co1/co2 are heterogeneous?
+
+mkAppDCo :: DCoercion     -- ^ :: t1 ~r t2
+         -> DCoercion     -- ^ :: s1 ~N s2, where s1 :: k1, s2 :: k2
+         -> DCoercion     -- ^ :: t1 s1 ~r t2 s2
+mkAppDCo ReflDCo ReflDCo = ReflDCo
+mkAppDCo (TyConAppDCo args) arg = TyConAppDCo (args ++ [arg])
+mkAppDCo co arg = AppDCo co arg
+
+mkAppDCos :: DCoercion
+         -> [DCoercion]
+         -> DCoercion
+mkAppDCos co1 cos = foldl' mkAppDCo co1 cos
+
+mkTransDCo :: DCoercion -> DCoercion -> DCoercion
+mkTransDCo ReflDCo co = co
+mkTransDCo co ReflDCo = co
+mkTransDCo (StepsDCo m) (StepsDCo n) = StepsDCo (m+n)
+mkTransDCo co1 co2    = TransDCo co1 co2
+
+-- | Make a Coercion from a tycovar, a kind coercion, and a body coercion.
+-- The kind of the tycovar should be the left-hand kind of the kind coercion.
+-- See Note [Unused coercion variable in ForAllCo]
+mkForAllDCo :: TyCoVar -> CoercionN -> DCoercion -> DCoercion
+mkForAllDCo v kind_co dco
+  | assert (varType v `eqType` (pFst $ coercionKind kind_co)) True
+  , assert (isTyVar v || almostDevoidCoVarOfDCo v dco) True
+  , isReflDCo dco
+  , isGReflCo kind_co
+  = ReflDCo
+mkForAllDCo v kind_co dco = ForAllDCo v kind_co dco
+
+-- | Like 'mkForAllCo', but the inner coercion shouldn't be an obvious
+-- reflexive coercion. For example, it is guaranteed in 'mkForAllCos'.
+-- The kind of the tycovar should be the left-hand kind of the kind coercion.
+mkForAllDCo_NoRefl :: TyCoVar -> CoercionN -> DCoercion -> DCoercion
+mkForAllDCo_NoRefl v kind_co dco
+  | assert (varType v `eqType` (pFst $ coercionKind kind_co)) True
+  , assert (isTyVar v || almostDevoidCoVarOfDCo v dco) True
+  , assert (not (isReflDCo dco)) True
+  , isCoVar v
+  , not (v `elemVarSet` tyCoVarsOfDCo dco)
+  = mkFunDCo mkReflDCo (mkCoDCo kind_co) dco
+      -- Functions from coercions are always unrestricted
+  | otherwise
+  = ForAllDCo v kind_co dco
+
+-- | Make a Coercion quantified over a type/coercion variable;
+-- the variable has the same type in both sides of the coercion
+mkHomoForAllDCos :: [TyCoVar] -> DCoercion -> DCoercion
+mkHomoForAllDCos _ ReflDCo = ReflDCo
+mkHomoForAllDCos vs co = mkHomoForAllDCos_NoRefl vs co
+
+-- | Like 'mkHomoForAllCos', but the inner coercion shouldn't be an obvious
+-- reflexive coercion. For example, it is guaranteed in 'mkHomoForAllCos'.
+mkHomoForAllDCos_NoRefl :: [TyCoVar] -> DCoercion -> DCoercion
+mkHomoForAllDCos_NoRefl vs orig_co
+  = assert (not (isReflDCo orig_co))
+    foldr go orig_co vs
+  where
+    go v co = mkForAllDCo_NoRefl v (mkNomReflCo (varType v)) co
+
+
+{-
+mkProofIrrelDCo :: Role       -- ^ role of the created coercion, "r"
+                -> DCoercionN  -- ^ :: phi1 ~N phi2
+                -> DCoercion   -- ^ g1 :: phi1
+                -> DCoercion   -- ^ g2 :: phi2
+                -> DCoercion   -- ^ :: g1 ~r g2
+
+-- if the two coercion prove the same fact, I just don't care what
+-- the individual coercions are.
+mkProofIrrelDCo _ ReflDCo _ _ = ReflDCo
+  -- kco is a kind coercion, thus @isGReflCo@ rather than @isReflCo@
+-- AMG TODO: think here; do we need this? Currently mkProofIrrelCo used only by unifier
+mkProofIrrelDCo _ _ _ _ = error "TODO"
+--mkProofIrrelDCo r kco        g1 g2 = CoDCo $ mkUnivCo (ProofIrrelProv kco) r
+--                                                      (mkCoercionTy g1) (mkCoercionTy g2)
+-}
+
+
+
+mkGReflRightMDCo :: Role -> Type -> MCoercionN -> DCoercion
+mkGReflRightMDCo _ _  MRefl    = mkReflDCo
+mkGReflRightMDCo _r _ty (MCo co) = mkGReflRightDCo co -- TODO: remove args
+
+mkGReflLeftMDCo :: Role -> Type -> MCoercionN -> DCoercion
+mkGReflLeftMDCo _ _  MRefl    = mkReflDCo
+mkGReflLeftMDCo _r _ty (MCo co) = mkGReflLeftDCo co -- TODO: remove args
+
+
+-- | Given @ty :: k1@, @co :: k1 ~ k2@,
+-- produces @co' :: ty ~r (ty |> co)@
+mkGReflRightDCo :: CoercionN -> DCoercion
+mkGReflRightDCo co
+  | isGReflCo co = mkReflDCo
+    -- the kinds of @k1@ and @k2@ are the same, thus @isGReflCo@
+    -- instead of @isReflCo@
+  | otherwise    = GReflRightDCo co
+
+-- | Given @ty :: k1@, @co :: k1 ~ k2@,
+-- produces @co' :: (ty |> co) ~r ty@
+mkGReflLeftDCo :: CoercionN -> DCoercion
+mkGReflLeftDCo co
+  | isGReflCo co = mkReflDCo
+    -- the kinds of @k1@ and @k2@ are the same, thus @isGReflCo@
+    -- instead of @isReflCo@
+  | otherwise    = GReflLeftDCo co
+
+-- | Given @ty :: k1@, @co :: k1 ~ k2@, @co2:: ty ~r ty'@,
+-- produces @co' :: (ty |> co) ~r ty'
+-- It is not only a utility function, but it saves allocation when co
+-- is a GRefl coercion.
+mkCoherenceLeftDCo :: Role -> Type -> CoercionN -> DCoercion -> DCoercion
+mkCoherenceLeftDCo _r _ty co co2 -- AMG TODO: drop args
+  | isGReflCo co = co2
+  | otherwise    = GReflLeftDCo co `mkTransDCo` co2 -- AMG TODO
+
+-- | Given @ty :: k1@, @co :: k1 ~ k2@, @co2:: ty' ~r ty@,
+-- produces @co' :: ty' ~r (ty |> co)
+-- It is not only a utility function, but it saves allocation when co
+-- is a GRefl coercion.
+mkCoherenceRightDCo :: Role -> Type -> CoercionN -> DCoercion -> DCoercion
+mkCoherenceRightDCo _r _ty co co2 -- AMG TODO: drop args?
+  | isGReflCo co = co2
+  | otherwise    = co2 `mkTransDCo` GReflRightDCo co
+
+-- | Like 'mkCoherenceRightDCo', but with an 'MCoercion'
+mkCoherenceRightMDCo :: Role -> Type -> MCoercionN -> DCoercion -> DCoercion
+mkCoherenceRightMDCo _ _  MRefl    co2 = co2
+mkCoherenceRightMDCo r ty (MCo co) co2 = mkCoherenceRightDCo r ty co co2
+
+
+
+-- AMG TODO: can be more clever here and construct a proper Coercion more often?
+mkDCoCo :: Role -> Type -> Type -> DCoercion -> Coercion
+mkDCoCo r ty _  ReflDCo       = mkReflCo r ty
+mkDCoCo r ty _  (GReflRightDCo co) = mkGReflCo r ty (MCo co)
+mkDCoCo r _  ty (GReflLeftDCo co) = mkSymCo (mkGReflCo r ty (MCo co))  -- AMG TODO: do we want this?
+mkDCoCo _ _  _  (CoVarDCo cv) = CoVarCo cv
+mkDCoCo r _  _  (CoDCo co)    = fromMaybe co (downgradeRole_maybe r (coercionRole co) co)
+mkDCoCo r t1 t2 dco           = UnivCo (DCoProv dco) r t1 t2
+
+
+-- AMG TODO: more cases here?
+mkCoDCo :: Coercion -> DCoercion
+mkCoDCo co | isReflCo co             = ReflDCo
+mkCoDCo (GRefl _ _ (MCo co))         = GReflRightDCo co
+mkCoDCo (UnivCo (DCoProv dco) _ _ _) = dco
+mkCoDCo (AxiomInstCo coax _branch cos)
+  | all isReflCo cos -- AMG TODO: can we avoid the need for this check?
+  , isOpenFamilyTyCon (coAxiomTyCon coax)  -- AMG TODO: need data families here or not?
+  = AxiomInstDCo coax
+  | all isReflCo cos
+  = singleStepDCo
+mkCoDCo (AxiomRuleCo _coax cos)
+  | all isReflCo cos  -- AMG TODO: can we avoid the need for this check?
+  = singleStepDCo
+mkCoDCo (SubCo co)                   = mkCoDCo co
+mkCoDCo co                           = CoDCo co
+
+singleStepDCo :: DCoercion
+singleStepDCo = StepsDCo 1
+
+
+mkCoVarDCo :: CoVar -> DCoercion
+mkCoVarDCo v = CoVarDCo v
+
+
 
 {- Note [Unused coercion variable in ForAllCo]
 
@@ -1382,6 +1598,7 @@ setNominalRole_maybe r co
                      ProofIrrelProv _ -> True   -- it's always safe
                      PluginProv _     -> False  -- who knows? This choice is conservative.
                      CorePrepProv _   -> True
+                     DCoProv _        -> False  -- AMG TODO
       = Just $ UnivCo prov Nominal co1 co2
     setNominalRole_maybe_helper _ = Nothing
 
@@ -1489,6 +1706,7 @@ promoteCoercion co = case co of
     UnivCo (ProofIrrelProv kco) _ _ _ -> kco
     UnivCo (PluginProv _)       _ _ _ -> mkKindCo co
     UnivCo (CorePrepProv _)     _ _ _ -> mkKindCo co
+    UnivCo (DCoProv _)          _ _ _ -> mkKindCo co  -- AMG TODO: how to do promoteCoercion for DCoProv?
 
     SymCo g
       -> mkSymCo (promoteCoercion g)
@@ -1574,6 +1792,35 @@ instCoercions g ws
       = do { g' <- instCoercion g_tys g w
            ; return (piResultTy <$> g_tys <*> w_tys, g') }
 
+
+-- | Creates a new coercion with both of its types casted by different casts
+-- @castDCoercionKind2 g r t1 t2 h1 h2@, where @g :: t1 ~r t2@,
+-- has type @(t1 |> h1) ~r (t2 |> h2)@.
+-- @h1@ and @h2@ must be nominal.
+castDCoercionKind2 :: DCoercion -> Role -> Type -> Type
+                   -> CoercionN -> CoercionN -> DCoercion
+castDCoercionKind2 g r t1 t2 h1 h2
+  = mkCoherenceRightDCo r t2 h2 (mkCoherenceLeftDCo r t1 h1 g)
+
+-- | @castDCoercionKind1 g r t1 t2 h@ = @castDCoercionKind2 g r t1 t2 h h@
+-- That is, it's a specialised form of castDCoercionKind, where the two
+--          kind coercions are identical
+-- @castDCoercionKind1 g r t1 t2 h@, where @g :: t1 ~r t2@,
+-- has type @(t1 |> h) ~r (t2 |> h)@.
+-- @h@ must be nominal.
+-- See Note [castCoercionKind1]
+castDCoercionKind1 :: DCoercion -> Role -> Type -> Type
+                  -> CoercionN -> DCoercion
+castDCoercionKind1 g r t1 t2 h
+  = case g of
+      ReflDCo               -> ReflDCo
+      GReflRightDCo kind_co -> GReflRightDCo $
+                                     mkSymCo h `mkTransCo` kind_co `mkTransCo` h
+      GReflLeftDCo kind_co  -> GReflLeftDCo $
+                                     mkSymCo h `mkTransCo` kind_co `mkTransCo` h
+      _                     -> castDCoercionKind2 g r t1 t2 h h
+
+
 -- | Creates a new coercion with both of its types casted by different casts
 -- @castCoercionKind2 g r t1 t2 h1 h2@, where @g :: t1 ~r t2@,
 -- has type @(t1 |> h1) ~r (t2 |> h2)@.
@@ -1583,8 +1830,8 @@ castCoercionKind2 :: Coercion -> Role -> Type -> Type
 castCoercionKind2 g r t1 t2 h1 h2
   = mkCoherenceRightCo r t2 h2 (mkCoherenceLeftCo r t1 h1 g)
 
--- | @castCoercionKind1 g r t1 t2 h@ = @coercionKind g r t1 t2 h h@
--- That is, it's a specialised form of castCoercionKind, where the two
+-- | @castCoercionKind1 g r t1 t2 h@ = @castCoercionKind2 g r t1 t2 h h@
+-- That is, it's a specialised form of castCoercionKind2, where the two
 --          kind coercions are identical
 -- @castCoercionKind1 g r t1 t2 h@, where @g :: t1 ~r t2@,
 -- has type @(t1 |> h) ~r (t2 |> h)@.
@@ -2327,15 +2574,35 @@ seqCo (KindCo co)               = seqCo co
 seqCo (SubCo co)                = seqCo co
 seqCo (AxiomRuleCo _ cs)        = seqCos cs
 
+seqDCo :: DCoercion -> ()
+seqDCo  ReflDCo            = ()
+seqDCo (GReflRightDCo co)  = seqCo co
+seqDCo (GReflLeftDCo co)   = seqCo co
+seqDCo (TyConAppDCo  cos)  = seqDCos cos
+seqDCo (AppDCo co1 co2)    = seqDCo co1 `seq` seqDCo co2
+seqDCo (ForAllDCo tv k co) = seqType (varType tv) `seq` seqCo k
+                                                  `seq` seqDCo co
+seqDCo (CoVarDCo cv)       = cv `seq` ()
+seqDCo (AxiomInstDCo con)  = con `seq` ()
+seqDCo StepsDCo{}          = ()
+seqDCo (TransDCo co1 co2)  = seqDCo co1 `seq` seqDCo co2
+seqDCo (CoDCo co)          = seqCo co
+
 seqProv :: UnivCoProvenance -> ()
 seqProv (PhantomProv co)    = seqCo co
 seqProv (ProofIrrelProv co) = seqCo co
 seqProv (PluginProv _)      = ()
 seqProv (CorePrepProv _)    = ()
+seqProv (DCoProv dco)       = seqDCo dco
 
 seqCos :: [Coercion] -> ()
 seqCos []       = ()
 seqCos (co:cos) = seqCo co `seq` seqCos cos
+
+seqDCos :: [DCoercion] -> ()
+seqDCos []       = ()
+seqDCos (co:cos) = seqDCo co `seq` seqDCos cos
+
 
 {-
 %************************************************************************
@@ -2719,7 +2986,7 @@ buildCoercion orig_ty1 orig_ty2 = go orig_ty1 orig_ty2
 
 has_co_hole_ty :: Type -> Monoid.Any
 has_co_hole_co :: Coercion -> Monoid.Any
-(has_co_hole_ty, _, has_co_hole_co, _)
+(has_co_hole_ty, _, has_co_hole_co, _, _, _)
   = foldTyCo folder ()
   where
     folder = TyCoFolder { tcf_view  = const Nothing
@@ -2746,7 +3013,7 @@ type HoleSet = UniqSet CoercionHole
 -- | Extract out all the coercion holes from a given type
 coercionHolesOfType :: Type -> UniqSet CoercionHole
 coercionHolesOfCo   :: Coercion -> UniqSet CoercionHole
-(coercionHolesOfType, _, coercionHolesOfCo, _) = foldTyCo folder ()
+(coercionHolesOfType, _, coercionHolesOfCo, _, _, _) = foldTyCo folder ()
   where
     folder = TyCoFolder { tcf_view  = const Nothing  -- don't look through synonyms
                         , tcf_tyvar = \ _ _ -> mempty

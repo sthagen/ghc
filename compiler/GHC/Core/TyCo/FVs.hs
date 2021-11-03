@@ -13,21 +13,26 @@ module GHC.Core.TyCo.FVs
         shallowTyCoVarsOfTyVarEnv, shallowTyCoVarsOfCoVarEnv,
 
         shallowTyCoVarsOfCo, shallowTyCoVarsOfCos,
+        shallowTyCoVarsOfDCo, shallowTyCoVarsOfDCos,
         tyCoVarsOfCo, tyCoVarsOfCos, tyCoVarsOfMCo,
+        tyCoVarsOfDCo,
         coVarsOfType, coVarsOfTypes,
         coVarsOfCo, coVarsOfCos,
         tyCoVarsOfCoDSet,
         tyCoFVsOfCo, tyCoFVsOfCos,
         tyCoVarsOfCoList,
+        tyCoVarsOfDCoList,
 
         almostDevoidCoVarOfCo,
+        almostDevoidCoVarOfDCo,
 
         -- Injective free vars
         injectiveVarsOfType, injectiveVarsOfTypes,
         invisibleVarsOfType, invisibleVarsOfTypes,
 
         -- Any and No Free vars
-        anyFreeVarsOfType, anyFreeVarsOfTypes, anyFreeVarsOfCo,
+        anyFreeVarsOfType, anyFreeVarsOfTypes,
+        anyFreeVarsOfCo, anyFreeVarsOfDCo,
         noFreeVarsOfType, noFreeVarsOfTypes, noFreeVarsOfCo,
 
         -- * Well-scoped free variables
@@ -296,11 +301,15 @@ tyCoVarsOfMCo (MCo co) = tyCoVarsOfCo co
 tyCoVarsOfCos :: [Coercion] -> TyCoVarSet
 tyCoVarsOfCos cos = runTyCoVars (deep_cos cos)
 
+tyCoVarsOfDCo :: DCoercion -> TyCoVarSet
+tyCoVarsOfDCo co = runTyCoVars (deep_dco co)
+
 deep_ty  :: Type       -> Endo TyCoVarSet
 deep_tys :: [Type]     -> Endo TyCoVarSet
 deep_co  :: Coercion   -> Endo TyCoVarSet
 deep_cos :: [Coercion] -> Endo TyCoVarSet
-(deep_ty, deep_tys, deep_co, deep_cos) = foldTyCo deepTcvFolder emptyVarSet
+deep_dco :: DCoercion  -> Endo TyCoVarSet
+(deep_ty, deep_tys, deep_co, deep_cos, deep_dco, _) = foldTyCo deepTcvFolder emptyVarSet
 
 deepTcvFolder :: TyCoFolder TyCoVarSet (Endo TyCoVarSet)
 deepTcvFolder = TyCoFolder { tcf_view = noView
@@ -340,6 +349,12 @@ shallowTyCoVarsOfCo co = runTyCoVars (shallow_co co)
 shallowTyCoVarsOfCos :: [Coercion] -> TyCoVarSet
 shallowTyCoVarsOfCos cos = runTyCoVars (shallow_cos cos)
 
+shallowTyCoVarsOfDCo :: DCoercion -> TyCoVarSet
+shallowTyCoVarsOfDCo dco = runTyCoVars (shallow_dco dco)
+
+shallowTyCoVarsOfDCos :: [DCoercion] -> TyCoVarSet
+shallowTyCoVarsOfDCos dcos = runTyCoVars (shallow_dcos dcos)
+
 -- | Returns free variables of types, including kind variables as
 -- a non-deterministic set. For type synonyms it does /not/ expand the
 -- synonym.
@@ -358,7 +373,9 @@ shallow_ty  :: Type       -> Endo TyCoVarSet
 shallow_tys :: [Type]     -> Endo TyCoVarSet
 shallow_co  :: Coercion   -> Endo TyCoVarSet
 shallow_cos :: [Coercion] -> Endo TyCoVarSet
-(shallow_ty, shallow_tys, shallow_co, shallow_cos) = foldTyCo shallowTcvFolder emptyVarSet
+shallow_dco  :: DCoercion   -> Endo TyCoVarSet
+shallow_dcos :: [DCoercion] -> Endo TyCoVarSet
+(shallow_ty, shallow_tys, shallow_co, shallow_cos, shallow_dco, shallow_dcos) = foldTyCo shallowTcvFolder emptyVarSet
 
 shallowTcvFolder :: TyCoFolder TyCoVarSet (Endo TyCoVarSet)
 shallowTcvFolder = TyCoFolder { tcf_view = noView
@@ -406,7 +423,7 @@ deep_cv_ty  :: Type       -> Endo CoVarSet
 deep_cv_tys :: [Type]     -> Endo CoVarSet
 deep_cv_co  :: Coercion   -> Endo CoVarSet
 deep_cv_cos :: [Coercion] -> Endo CoVarSet
-(deep_cv_ty, deep_cv_tys, deep_cv_co, deep_cv_cos) = foldTyCo deepCoVarFolder emptyVarSet
+(deep_cv_ty, deep_cv_tys, deep_cv_co, deep_cv_cos, _, _) = foldTyCo deepCoVarFolder emptyVarSet
 
 deepCoVarFolder :: TyCoFolder TyCoVarSet (Endo CoVarSet)
 deepCoVarFolder = TyCoFolder { tcf_view = noView
@@ -604,6 +621,9 @@ tyCoVarsOfCoList :: Coercion -> [TyCoVar]
 -- See Note [Free variables of types]
 tyCoVarsOfCoList co = fvVarList $ tyCoFVsOfCo co
 
+tyCoVarsOfDCoList :: DCoercion -> [TyCoVar]
+tyCoVarsOfDCoList co = fvVarList $ tyCoFVsOfDCo co
+
 tyCoFVsOfMCo :: MCoercion -> FV
 tyCoFVsOfMCo MRefl    = emptyFV
 tyCoFVsOfMCo (MCo co) = tyCoFVsOfCo co
@@ -649,11 +669,29 @@ tyCoFVsOfProv (PhantomProv co)    fv_cand in_scope acc = tyCoFVsOfCo co fv_cand 
 tyCoFVsOfProv (ProofIrrelProv co) fv_cand in_scope acc = tyCoFVsOfCo co fv_cand in_scope acc
 tyCoFVsOfProv (PluginProv _)      fv_cand in_scope acc = emptyFV fv_cand in_scope acc
 tyCoFVsOfProv (CorePrepProv _)    fv_cand in_scope acc = emptyFV fv_cand in_scope acc
+tyCoFVsOfProv (DCoProv dco)       fv_cand in_scope acc = tyCoFVsOfDCo dco fv_cand in_scope acc
 
 tyCoFVsOfCos :: [Coercion] -> FV
 tyCoFVsOfCos []       fv_cand in_scope acc = emptyFV fv_cand in_scope acc
 tyCoFVsOfCos (co:cos) fv_cand in_scope acc = (tyCoFVsOfCo co `unionFV` tyCoFVsOfCos cos) fv_cand in_scope acc
 
+tyCoFVsOfDCos :: [DCoercion] -> FV
+tyCoFVsOfDCos []       fv_cand in_scope acc = emptyFV fv_cand in_scope acc
+tyCoFVsOfDCos (co:cos) fv_cand in_scope acc = (tyCoFVsOfDCo co `unionFV` tyCoFVsOfDCos cos) fv_cand in_scope acc
+
+tyCoFVsOfDCo :: DCoercion -> FV
+tyCoFVsOfDCo ReflDCo            fv_cand in_scope acc = emptyFV fv_cand in_scope acc
+tyCoFVsOfDCo (GReflRightDCo co) fv_cand in_scope acc = tyCoFVsOfCo co fv_cand in_scope acc
+tyCoFVsOfDCo (GReflLeftDCo  co) fv_cand in_scope acc = tyCoFVsOfCo co fv_cand in_scope acc
+tyCoFVsOfDCo (TyConAppDCo dcos) fv_cand in_scope acc = tyCoFVsOfDCos dcos fv_cand in_scope acc
+tyCoFVsOfDCo (AppDCo dco1 dco2) fv_cand in_scope acc = (tyCoFVsOfDCo dco1 `unionFV` tyCoFVsOfDCo dco2) fv_cand in_scope acc
+tyCoFVsOfDCo (ForAllDCo tv kind_co co) fv_cand in_scope acc
+  = (tyCoFVsVarBndr tv (tyCoFVsOfDCo co) `unionFV` tyCoFVsOfCo kind_co) fv_cand in_scope acc
+tyCoFVsOfDCo (CoVarDCo v)         fv_cand in_scope acc = tyCoFVsOfCoVar v fv_cand in_scope acc
+tyCoFVsOfDCo AxiomInstDCo{}       fv_cand in_scope acc = emptyFV fv_cand in_scope acc
+tyCoFVsOfDCo StepsDCo{}           fv_cand in_scope acc = emptyFV fv_cand in_scope acc
+tyCoFVsOfDCo (TransDCo dco1 dco2) fv_cand in_scope acc = (tyCoFVsOfDCo dco1 `unionFV` tyCoFVsOfDCo dco2) fv_cand in_scope acc
+tyCoFVsOfDCo (CoDCo co)           fv_cand in_scope acc = tyCoFVsOfCo co fv_cand in_scope acc
 
 ----- Whether a covar is /Almost Devoid/ in a type or coercion ----
 
@@ -663,6 +701,10 @@ tyCoFVsOfCos (co:cos) fv_cand in_scope acc = (tyCoFVsOfCo co `unionFV` tyCoFVsOf
 almostDevoidCoVarOfCo :: CoVar -> Coercion -> Bool
 almostDevoidCoVarOfCo cv co =
   almost_devoid_co_var_of_co co cv
+
+almostDevoidCoVarOfDCo :: CoVar -> DCoercion -> Bool
+almostDevoidCoVarOfDCo cv dco =
+  almost_devoid_co_var_of_dco dco cv
 
 almost_devoid_co_var_of_co :: Coercion -> CoVar -> Bool
 almost_devoid_co_var_of_co (Refl {}) _ = True   -- covar is allowed in Refl and
@@ -713,11 +755,41 @@ almost_devoid_co_var_of_cos (co:cos) cv
   = almost_devoid_co_var_of_co co cv
   && almost_devoid_co_var_of_cos cos cv
 
+almost_devoid_co_var_of_dcos :: [DCoercion] -> CoVar -> Bool
+almost_devoid_co_var_of_dcos [] _ = True
+almost_devoid_co_var_of_dcos (co:cos) cv
+  = almost_devoid_co_var_of_dco co cv
+  && almost_devoid_co_var_of_dcos cos cv
+
+almost_devoid_co_var_of_dco :: DCoercion -> CoVar -> Bool
+almost_devoid_co_var_of_dco ReflDCo _ = True
+almost_devoid_co_var_of_dco GReflRightDCo{} _ = True -- GRefl, so we don't look into
+                                                     -- the coercions
+almost_devoid_co_var_of_dco GReflLeftDCo{}  _ = True
+almost_devoid_co_var_of_dco (TyConAppDCo cos) cv
+  = almost_devoid_co_var_of_dcos cos cv
+almost_devoid_co_var_of_dco (AppDCo co arg) cv
+  = almost_devoid_co_var_of_dco co cv
+  && almost_devoid_co_var_of_dco arg cv
+almost_devoid_co_var_of_dco (ForAllDCo v kind_co co) cv
+  = almost_devoid_co_var_of_co kind_co cv
+  && (v == cv || almost_devoid_co_var_of_dco co cv)
+almost_devoid_co_var_of_dco (CoVarDCo v) cv = v /= cv
+almost_devoid_co_var_of_dco AxiomInstDCo{} _ = True
+almost_devoid_co_var_of_dco StepsDCo{} _     = True
+almost_devoid_co_var_of_dco (TransDCo co1 co2) cv
+  = almost_devoid_co_var_of_dco co1 cv
+  && almost_devoid_co_var_of_dco co2 cv
+almost_devoid_co_var_of_dco (CoDCo co) cv
+  = almost_devoid_co_var_of_co co cv
+
 almost_devoid_co_var_of_prov :: UnivCoProvenance -> CoVar -> Bool
 almost_devoid_co_var_of_prov (PhantomProv co) cv
   = almost_devoid_co_var_of_co co cv
 almost_devoid_co_var_of_prov (ProofIrrelProv co) cv
   = almost_devoid_co_var_of_co co cv
+almost_devoid_co_var_of_prov (DCoProv dco) cv
+  = almost_devoid_co_var_of_dco dco cv
 almost_devoid_co_var_of_prov (PluginProv _)   _ = True
 almost_devoid_co_var_of_prov (CorePrepProv _) _ = True
 
@@ -876,27 +948,31 @@ afvFolder check_fv = TyCoFolder { tcf_view = noView
 
 anyFreeVarsOfType :: (TyCoVar -> Bool) -> Type -> Bool
 anyFreeVarsOfType check_fv ty = DM.getAny (f ty)
-  where (f, _, _, _) = foldTyCo (afvFolder check_fv) emptyVarSet
+  where (f, _, _, _, _, _) = foldTyCo (afvFolder check_fv) emptyVarSet
 
 anyFreeVarsOfTypes :: (TyCoVar -> Bool) -> [Type] -> Bool
 anyFreeVarsOfTypes check_fv tys = DM.getAny (f tys)
-  where (_, f, _, _) = foldTyCo (afvFolder check_fv) emptyVarSet
+  where (_, f, _, _, _, _) = foldTyCo (afvFolder check_fv) emptyVarSet
 
 anyFreeVarsOfCo :: (TyCoVar -> Bool) -> Coercion -> Bool
 anyFreeVarsOfCo check_fv co = DM.getAny (f co)
-  where (_, _, f, _) = foldTyCo (afvFolder check_fv) emptyVarSet
+  where (_, _, f, _, _, _) = foldTyCo (afvFolder check_fv) emptyVarSet
+
+anyFreeVarsOfDCo :: (TyCoVar -> Bool) -> DCoercion -> Bool
+anyFreeVarsOfDCo check_fv co = DM.getAny (f co)
+  where (_, _, _, _, f, _) = foldTyCo (afvFolder check_fv) emptyVarSet
 
 noFreeVarsOfType :: Type -> Bool
 noFreeVarsOfType ty = not $ DM.getAny (f ty)
-  where (f, _, _, _) = foldTyCo (afvFolder (const True)) emptyVarSet
+  where (f, _, _, _, _, _) = foldTyCo (afvFolder (const True)) emptyVarSet
 
 noFreeVarsOfTypes :: [Type] -> Bool
 noFreeVarsOfTypes tys = not $ DM.getAny (f tys)
-  where (_, f, _, _) = foldTyCo (afvFolder (const True)) emptyVarSet
+  where (_, f, _, _, _, _) = foldTyCo (afvFolder (const True)) emptyVarSet
 
 noFreeVarsOfCo :: Coercion -> Bool
 noFreeVarsOfCo co = not $ DM.getAny (f co)
-  where (_, _, f, _) = foldTyCo (afvFolder (const True)) emptyVarSet
+  where (_, _, f, _, _, _) = foldTyCo (afvFolder (const True)) emptyVarSet
 
 
 {- *********************************************************************

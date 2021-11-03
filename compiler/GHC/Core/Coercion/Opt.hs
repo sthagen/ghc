@@ -610,6 +610,12 @@ opt_univ opts env sym (PhantomProv h) _r ty1 ty2
     ty1' = substTy (lcSubstLeft  env) ty1
     ty2' = substTy (lcSubstRight env) ty2
 
+opt_univ _opts env sym (DCoProv dco) r ty1 ty2
+--  = opt_univ opts env sym (PluginProv "AMG TODO") r ty1 ty2
+  -- AMG TODO: I don't know how to write this correctly, but the following is probably wrong.
+  | sym       = substCo (lcTCvSubst env) (mkSymCo (mkDCoCo r ty1 ty2 dco))
+  | otherwise = substCo (lcTCvSubst env) (mkDCoCo r ty1 ty2 dco)
+
 opt_univ opts env sym prov role oty1 oty2
 
   | Just (tc1, tys1) <- splitTyConApp_maybe oty1
@@ -671,6 +677,7 @@ opt_univ opts env sym prov role oty1 oty2
 #if __GLASGOW_HASKELL__ < 901
 -- This alt is redundant with the first match of the FunDef
       PhantomProv kco    -> PhantomProv $ opt_co4_wrap opts env sym False Nominal kco
+      DCoProv _          -> prov
 #endif
       ProofIrrelProv kco -> ProofIrrelProv $ opt_co4_wrap opts env sym False Nominal kco
       PluginProv _       -> prov
@@ -757,6 +764,8 @@ opt_trans_rule opts is in_co1@(UnivCo p1 r1 tyl1 _tyr1)
     opt_trans_prov (ProofIrrelProv kco1) (ProofIrrelProv kco2)
       = Just $ ProofIrrelProv $ opt_trans opts is kco1 kco2
     opt_trans_prov (PluginProv str1)     (PluginProv str2)     | str1 == str2 = Just p1
+    opt_trans_prov (DCoProv dco1)        (DCoProv dco2)
+      = Just $ DCoProv $ dco1 `mkTransDCo` dco2 -- AMG TODO ?
     opt_trans_prov _ _ = Nothing
 
 -- Push transitivity down through matching top-level constructors.

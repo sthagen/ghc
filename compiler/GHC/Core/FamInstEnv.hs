@@ -25,7 +25,7 @@ module GHC.Core.FamInstEnv (
         FamInstMatch(..),
         lookupFamInstEnv, lookupFamInstEnvConflicts, lookupFamInstEnvByTyCon,
 
-        isDominatedBy, apartnessCheck,
+        isDominatedBy, apartnessCheck, chooseBranch,
 
         -- Injectivity
         InjectivityCheckResult(..),
