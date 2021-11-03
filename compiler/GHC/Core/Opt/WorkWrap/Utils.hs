@@ -1268,7 +1268,7 @@ findTypeShape fam_envs ty
        = TsUnk
 
     go_tc rec_tc tc tc_args
-       | Just (HetReduction (Reduction _ rhs) _) <- topReduceTyFamApp_maybe fam_envs tc tc_args
+       | Just (HetReduction (Reduction _ _ rhs) _) <- topReduceTyFamApp_maybe fam_envs tc tc_args
        = go rec_tc rhs
 
        | Just con <- tyConSingleAlgDataCon_maybe tc

@@ -217,8 +217,8 @@ canClass :: CtEvidence
 canClass ev cls tys pend_sc fds
   = -- all classes do *nominal* matching
     assertPpr (ctEvRole ev == Nominal) (ppr ev $$ ppr cls $$ ppr tys) $
-    do { redns@(Reductions _ xis) <- rewriteArgsNom ev cls_tc tys
-       ; let redn@(Reduction _ xi) = mkClassPredRedn cls redns
+    do { redns@(Reductions _ _ xis) <- rewriteArgsNom ev cls_tc tys
+       ; let redn@(Reduction _ _ xi) = mkClassPredRedn cls redns
              mk_ct new_ev = CDictCan { cc_ev = new_ev
                                      , cc_tyargs = xis
                                      , cc_class = cls
@@ -1206,8 +1206,8 @@ can_eq_nc' True _rdr_env _envs ev NomEq ty1 _ ty2 _
 
 -- No similarity in type structure detected. Rewrite and try again.
 can_eq_nc' False rdr_env envs ev eq_rel _ ps_ty1 _ ps_ty2
-  = do { redn1@(Reduction _ xi1) <- rewrite ev ps_ty1
-       ; redn2@(Reduction _ xi2) <- rewrite ev ps_ty2
+  = do { redn1@(Reduction _ _ xi1) <- rewrite ev ps_ty1
+       ; redn2@(Reduction _ _ xi2) <- rewrite ev ps_ty2
        ; new_ev <- rewriteEqEvidence ev NotSwapped redn1 redn2
        ; can_eq_nc' True rdr_env envs new_ev eq_rel xi1 xi1 xi2 xi2 }
 
@@ -1609,7 +1609,7 @@ can_eq_newtype_nc :: CtEvidence           -- ^ :: ty1 ~ ty2
                   -> TcS (StopOrContinue Ct)
 can_eq_newtype_nc ev swapped ty1 ((gres, co1), ty1') ty2 ps_ty2
   = do { traceTcS "can_eq_newtype_nc" $
-         vcat [ ppr ev, ppr swapped, ppr co1, ppr gres, ppr ty1', ppr ty2 ]
+         vcat [ ppr ev, ppr swapped, ppr ty1, ppr co1, ppr gres, ppr ty1', ppr ty2, ppr ps_ty2 ]
 
          -- check for blowing our stack:
          -- See Note [Newtypes can blow the stack]
@@ -1625,7 +1625,7 @@ can_eq_newtype_nc ev swapped ty1 ((gres, co1), ty1') ty2 ps_ty2
          -- module, don't warn about it being unused.
          -- See Note [Tracking unused binding and imports] in GHC.Tc.Utils.
 
-       ; let redn1 = mkReduction co1 ty1'
+       ; let redn1 = mkReduction ty1 (mkCoDCo co1) ty1'  -- AMG TODO eliminate CoDCo
 
        ; new_ev <- rewriteEqEvidence ev swapped
                      redn1
@@ -2251,7 +2251,7 @@ canEqCanLHSHetero ev eq_rel swapped lhs1 ps_xi1 ki1 xi2 ps_xi2 ki2
              ps_rhs' = ps_xi2 `mkCastTy` kind_co   -- :: ki1
 
              lhs_redn = mkReflRedn role xi1
-             rhs_redn@(Reduction _ rhs')
+             rhs_redn@(Reduction _ _ rhs')
                = mkGReflRightRedn role xi2 kind_co
 
        ; traceTcS "Hetero equality gives rise to kind equality"
@@ -2508,7 +2508,7 @@ canEqCanLHSFinish ev eq_rel swapped lhs rhs
                          do { traceTcS "canEqCanLHSFinish can't make a canonical"
                                        (ppr lhs $$ ppr rhs)
                             ; continueWith (mkIrredCt reason new_ev) }
-                     ; Just (lhs_tv, rhs_redn@(Reduction _ new_rhs)) ->
+                     ; Just (lhs_tv, rhs_redn@(Reduction _ _ new_rhs)) ->
               do { traceTcS "canEqCanLHSFinish breaking a cycle" $
                             ppr lhs $$ ppr rhs
                  ; traceTcS "new RHS:" (ppr new_rhs)
@@ -3128,7 +3128,7 @@ as well as in old_pred; that is important for good error messages.
  -}
 
 
-rewriteEvidence old_ev@(CtDerived {}) (Reduction _co new_pred)
+rewriteEvidence old_ev@(CtDerived {}) (Reduction _ _co new_pred)
   = -- If derived, don't even look at the coercion.
     -- This is very important, DO NOT re-order the equations for
     -- rewriteEvidence to put the isTcReflCo test first!
@@ -3138,11 +3138,11 @@ rewriteEvidence old_ev@(CtDerived {}) (Reduction _co new_pred)
     -- (Getting this wrong caused #7384.)
     continueWith (setCtEvPredType old_ev new_pred)
 
-rewriteEvidence old_ev (Reduction co new_pred)
-  | isTcReflCo co -- See Note [Rewriting with Refl]
+rewriteEvidence old_ev (Reduction _ dco new_pred)
+  | isReflDCo dco -- See Note [Rewriting with Refl]
   = continueWith (setCtEvPredType old_ev new_pred)
 
-rewriteEvidence ev@(CtGiven { ctev_evar = old_evar, ctev_loc = loc }) (Reduction co new_pred)
+rewriteEvidence ev@(CtGiven { ctev_evar = old_evar, ctev_loc = loc }) (Reduction old_pred dco new_pred)
   = do { new_ev <- newGivenEvVar loc (new_pred, new_tm)
        ; continueWith new_ev }
   where
@@ -3150,12 +3150,15 @@ rewriteEvidence ev@(CtGiven { ctev_evar = old_evar, ctev_loc = loc }) (Reduction
     new_tm = mkEvCast (evId old_evar)
                 (tcDowngradeRole Representational (ctEvRole ev) co)
 
+    co = mkDCoCo (ctEvRole ev) old_pred new_pred dco
+
 rewriteEvidence ev@(CtWanted { ctev_dest = dest
                              , ctev_nosh = si
-                             , ctev_loc = loc }) (Reduction co new_pred)
+                             , ctev_loc = loc }) (Reduction old_pred dco new_pred)
   = do { mb_new_ev <- newWanted_SI si loc new_pred
                -- The "_SI" variant ensures that we make a new Wanted
                -- with the same shadow-info as the existing one (#16735)
+       ; let co = mkDCoCo (ctEvRole ev) old_pred new_pred dco
        ; massert (tcCoercionRole co == ctEvRole ev)
        ; setWantedEvTerm dest
             (mkEvCast (getEvExpr mb_new_ev)
@@ -3186,13 +3189,13 @@ rewriteEqEvidence :: CtEvidence         -- Old evidence :: olhs ~ orhs (not swap
 --      w : orhs ~ olhs = rhs_co ; sym w1 ; sym lhs_co
 --
 -- It's all a form of rewriteEvidence, specialised for equalities
-rewriteEqEvidence old_ev swapped (Reduction lhs_co nlhs) (Reduction rhs_co nrhs)
+rewriteEqEvidence old_ev swapped lhs_redn@(Reduction _ lhs_dco nlhs) rhs_redn@(Reduction _ rhs_dco nrhs)
   | CtDerived {} <- old_ev  -- Don't force the evidence for a Derived
   = return (setCtEvPredType old_ev new_pred)
 
   | NotSwapped <- swapped
-  , isTcReflCo lhs_co      -- See Note [Rewriting with Refl]
-  , isTcReflCo rhs_co
+  , isReflDCo lhs_dco      -- See Note [Rewriting with Refl]
+  , isReflDCo rhs_dco
   = return (setCtEvPredType old_ev new_pred)
 
   | CtGiven { ctev_evar = old_evar } <- old_ev
@@ -3226,6 +3229,10 @@ rewriteEqEvidence old_ev swapped (Reduction lhs_co nlhs) (Reduction rhs_co nrhs)
       -- it bigger. See Note [Newtypes can blow the stack].
     loc      = ctEvLoc old_ev
     loc'     = bumpCtLocDepth loc
+
+    lhs_co = reductionCoercion (ctEvRole old_ev) lhs_redn
+    rhs_co = reductionCoercion (ctEvRole old_ev) rhs_redn
+
 
 {-
 ************************************************************************

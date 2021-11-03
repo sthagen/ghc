@@ -1089,7 +1089,7 @@ lookupFamAppInert fam_tc tys
     lookup_inerts inert_funeqs
       | Just (EqualCtList (CEqCan { cc_ev = ctev, cc_rhs = rhs } :| _))
           <- findFunEq inert_funeqs fam_tc tys
-      = Just (mkReduction (ctEvCoercion ctev) rhs
+      = Just (mkReduction (mkTyConApp fam_tc tys) (mkCoDCo (ctEvCoercion ctev)) rhs -- AMG TODO: CoDCo?
              ,ctEvFlavourRole ctev)
       | otherwise = Nothing
 
@@ -1131,7 +1131,7 @@ lookupFamAppCache fam_tc tys
 
 extendFamAppCache :: TyCon -> [Type] -> Reduction -> TcS ()
 -- NB: co :: rhs ~ F tys, to match expectations of rewriter
-extendFamAppCache tc xi_args stuff@(Reduction _ ty)
+extendFamAppCache tc xi_args stuff@(Reduction _ _ ty)
   = do { dflags <- getDynFlags
        ; when (gopt Opt_FamAppCache dflags) $
     do { traceTcS "extendFamAppCache" (vcat [ ppr tc <+> ppr xi_args
@@ -1150,7 +1150,7 @@ dropFromFamAppCache varset
   where
     check :: Reduction -> Bool
     check redn
-      = not (anyFreeVarsOfCo (`elemVarSet` varset) $ reductionCoercion redn)
+      = not (anyFreeVarsOfDCo (`elemVarSet` varset) $ reductionDCoercion redn)
 
 {- *********************************************************************
 *                                                                      *
@@ -2231,7 +2231,7 @@ matchFamTcM tycon args
        ; return match_fam_result }
   where
     ppr_res Nothing = text "Match failed"
-    ppr_res (Just (Reduction co ty))
+    ppr_res (Just (Reduction _ co ty))
       = hang (text "Match succeeded:")
           2 (vcat [ text "Rewrites to:" <+> ppr ty
                   , text "Coercion:" <+> ppr co ])
@@ -2303,14 +2303,14 @@ breakTyVarCycle_maybe ev cte_result (TyVarLHS lhs_tv) rhs
 
       | otherwise
       = do { arg_redns <- unzipRedns <$> mapM go tys
-           ; return $ mkTyConAppRedn Nominal tc arg_redns }
+           ; return $ mkTyConAppRedn_MightBeSynonym Nominal tc arg_redns }
 
     go (Rep.AppTy ty1 ty2)
       = mkAppRedn <$> go ty1 <*> go ty2
     go (Rep.FunTy vis w arg res)
       = mkFunRedn Nominal vis <$> go w <*> go arg <*> go res
     go (Rep.CastTy ty cast_co)
-      = mkCastRedn1 Nominal ty cast_co <$> go ty
+      = mkCastRedn1 Nominal cast_co <$> go ty
     go ty@(Rep.TyVarTy {})    = skip ty
     go ty@(Rep.LitTy {})      = skip ty
     go ty@(Rep.ForAllTy {})   = skip ty  -- See Detail (1) of Note
@@ -2341,7 +2341,7 @@ breakTyVarCycle_maybe ev cte_result (TyVarLHS lhs_tv) rhs
         do { new_tv <- wrapTcS (TcM.newFlexiTyVar fun_app_kind)
            ; let new_ty = mkTyVarTy new_tv
            ; co <- emitNewWantedEq new_loc Nominal new_ty fun_app
-           ; return $ mkReduction (mkSymCo co) new_ty }
+           ; return $ mkReduction fun_app (mkCoDCo (mkSymCo co)) new_ty }  -- AMG TODO: CoDCo?
 
       -- See Detail (7) of the Note
     new_loc = updateCtLocOrigin (ctEvLoc ev) CycleBreakerOrigin
