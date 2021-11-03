@@ -184,6 +184,7 @@ import GHC.Data.Maybe
 import GHC.Types.Unique.FM
 import GHC.Types.Unique.Set
 
+import GHC.Utils.Monad
 import GHC.Utils.Misc
 import GHC.Utils.Outputable
 import GHC.Utils.Panic
@@ -1594,13 +1595,40 @@ setNominalRole_maybe r co
     setNominalRole_maybe_helper (InstCo co arg)
       = InstCo <$> setNominalRole_maybe_helper co <*> pure arg
     setNominalRole_maybe_helper (UnivCo prov _ co1 co2)
-      | case prov of PhantomProv _    -> False  -- should always be phantom
-                     ProofIrrelProv _ -> True   -- it's always safe
-                     PluginProv _     -> False  -- who knows? This choice is conservative.
-                     CorePrepProv _   -> True
-                     DCoProv _        -> False  -- AMG TODO
-      = Just $ UnivCo prov Nominal co1 co2
+      | Just prov' <- case prov of
+                     PhantomProv _    -> Nothing  -- should always be phantom
+                     ProofIrrelProv _ -> Just prov   -- it's always safe
+                     PluginProv _     -> Nothing  -- who knows? This choice is conservative.
+                     CorePrepProv _   -> Just prov
+                     DCoProv dco      -> DCoProv <$> setNominalRole_maybe_dco r co1 dco
+      = Just $ UnivCo prov' Nominal co1 co2
     setNominalRole_maybe_helper _ = Nothing
+
+-- AMG TODO TODO: the following is unfinished; is it needed?
+setNominalRole_maybe_dco :: Role -> Type -> DCoercion -> Maybe DCoercion
+setNominalRole_maybe_dco _ _ dco@ReflDCo         = pure dco
+setNominalRole_maybe_dco _ _ dco@GReflRightDCo{} = pure dco
+setNominalRole_maybe_dco _ _ dco@GReflLeftDCo{}  = pure dco
+setNominalRole_maybe_dco _ ty (TyConAppDCo dcos)
+  = do { let (tc, tys) = splitTyConApp ty
+       ; dcos' <- zipWith3M setNominalRole_maybe_dco (tyConRolesX Representational tc) tys dcos
+       ; return $ TyConAppDCo dcos' }
+setNominalRole_maybe_dco r ty  (AppDCo dco1 dco2)
+  = do { let (ty1, _) = splitAppTy ty
+       ; AppDCo <$> setNominalRole_maybe_dco r ty1 dco1 <*> pure dco2
+       }
+setNominalRole_maybe_dco r ty (ForAllDCo tv kind_co dco)
+   = do { let (_, body_ty) = splitForAllTyCoVar ty
+        ; ForAllDCo tv kind_co <$> setNominalRole_maybe_dco r body_ty dco
+        }
+setNominalRole_maybe_dco _ _ CoVarDCo{}                 = Nothing
+setNominalRole_maybe_dco _ _ dco@(AxiomInstDCo coax)
+  | coAxiomRole coax == Nominal         = pure dco
+  | otherwise                           = Nothing
+setNominalRole_maybe_dco _ _ StepsDCo{} = Nothing
+setNominalRole_maybe_dco r ty (TransDCo dco1 dco2)
+  = TransDCo <$> setNominalRole_maybe_dco r ty dco1 <*> setNominalRole_maybe_dco r (error "AMG TODO: xyzzy") dco2
+setNominalRole_maybe_dco r _ (CoDCo co)             = CoDCo <$> setNominalRole_maybe r co
 
 -- | Make a phantom coercion between two types. The coercion passed
 -- in must be a nominal coercion between the kinds of the
