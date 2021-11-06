@@ -13,8 +13,6 @@ import GHC.Prelude
 import GHC.Unit
 import GHC.Unit.Env
 
-import GHC.Core.TyCon
-
 import GHC.Types.Name
 import GHC.Types.Name.Reader
 
@@ -114,8 +112,11 @@ mkPrintUnqualified unit_env env
 
         forceUnqualNames :: [Name]
         forceUnqualNames =
-          map tyConName [ constraintKindTyCon, heqTyCon, coercibleTyCon ]
-          ++ [ eqTyConName ]
+          [ liftedTypeKindTyConName
+          , constraintKindTyConName
+          , heqTyConName
+          , coercibleTyConName
+          , eqTyConName ]
 
         right_name gre = greDefinitionModule gre == Just mod
 
