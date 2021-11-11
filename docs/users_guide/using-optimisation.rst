@@ -1542,7 +1542,7 @@ by saying ``-fno-wombat``.
 .. ghc-flag:: -fworker-wrapper-cbv
     :shortdesc: Enable w/w splits for wrappers whos sole purpose is evaluating arguments.
     :type: dynamic
-    :category:
+    :category: optimization
 
     Disabling this flag prevents a W/W split if the only benefit would be call-by-value
     for some arguments.
@@ -1563,8 +1563,7 @@ by saying ``-fno-wombat``.
     marking use sites of these functions as INLINE or INLINEABLE then things will break
     unless this flag is disabled.
 
-    While WorkerWrapper is disabled (by :ghc-flag:`-fno-worker-wrapper`) this
-    has no effect.
+    While WorkerWrapper is disabled this has no effect.
 
 .. ghc-flag:: -fbinary-blob-threshold=⟨n⟩
     :shortdesc: *default: 500K.* Tweak assembly generator for binary blobs.

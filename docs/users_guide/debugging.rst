@@ -453,6 +453,12 @@ These flags dump various phases of GHC's STG pipeline.
 
     Show the output of the unarise pass.
 
+.. ghc-flag:: -ddump-stg-cg
+    :shortdesc: Show output after Stg2Stg
+    :type: dynamic
+
+    Show the output of the STG after Stg2Stg.
+
 .. ghc-flag:: -ddump-stg-tags
     :shortdesc: Show output of the tag inference pass.
     :type: dynamic
