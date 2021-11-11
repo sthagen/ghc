@@ -930,6 +930,10 @@ AC_PATH_PROG(MAKEINDEX,makeindex)
 dnl ** check for makeinfo
 AC_PATH_PROG(MAKEINFO,makeinfo)
 
+dnl ** check for cabal
+AC_PATH_PROG(CABAL,cabal)
+
+
 dnl ** check for Python for testsuite driver
 FIND_PYTHON
 
@@ -1399,6 +1403,7 @@ echo "\
    sphinx-build : $SPHINXBUILD
    xelatex      : $XELATEX
    makeinfo     : $MAKEINFO
+   cabal-install : $CABAL
 
    Using LLVM tools
       clang : $ClangCmd

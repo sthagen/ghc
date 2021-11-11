@@ -9,31 +9,91 @@ import Flavour
 import Packages
 import Settings.Builders.Common
 import qualified Settings.Builders.Common as S
+import Control.Exception (assert)
 
 cabalBuilderArgs :: Args
-cabalBuilderArgs = builder (Cabal Setup) ? do
-    verbosity <- expr getVerbosity
+cabalBuilderArgs = cabalSetupArgs <> cabalBuildArgs <> cabalListBinArgs
+
+cabalListBinArgs :: Args
+cabalListBinArgs = assertNoBuildRootLeak $ builder (Cabal ListBin) ? do
+  ctx <- getContext
+  prog_name <- expr $ programName ctx
+  assertNoBuildRootLeak $
+    mconcat [ arg "list-bin"
+            , arg $ "exe:" ++ prog_name
+            , commonReinstallCabalArgs
+            ]
+
+cabalBuildArgs :: Args
+cabalBuildArgs = builder (Cabal Build) ?  do
+  pkg <- getPackage
+  assertNoBuildRootLeak $
+    mconcat [ arg "build"
+            , arg $ pkgName pkg
+            , commonReinstallCabalArgs
+            ]
+
+-- | Checks that _build/stageN/lib/* doesn't leak into the arguments for
+-- reinstallable GHC. If this assert fails, then GHC probably isn't
+-- properly reinstallable.
+-- We allow "package.conf.d" however since we do need to read the package environment
+-- of the stage 2 compiler
+assertNoBuildRootLeak :: Args -> Args
+assertNoBuildRootLeak args = do
+  libPaths <- expr $ mapM stageLibPath [Stage0 ..]
+  xs <- args
+  pure $ assert (not $ any (\arg -> or [libPath `isInfixOf` arg && not ("package.conf.d" `isSuffixOf` arg)
+                                       | libPath <- libPaths]) xs)
+                xs
+
+commonReinstallCabalArgs :: Args
+commonReinstallCabalArgs = do
     top       <- expr topDirectory
-    pkg       <- getPackage
-    path      <- getContextPath
+    root      <- getBuildRoot
     stage     <- getStage
-    let prefix = "${pkgroot}" ++ (if windowsHost then "" else "/..")
-    mconcat [ arg "configure"
-            -- Don't strip libraries when cross compiling.
+    version   <- getSetting ProjectVersion
+    threads   <- shakeThreads <$> expr getShakeOptions
+    pkg       <- getPackage
+    mconcat [ arg "--project-file"
+            , arg $ top -/- "cabal.project"
+            , arg "--distdir"
+            , arg $ root -/- "stage-cabal" -/- "dist-newstyle"
+            , arg ("--ghc-option=-j" ++ show threads)
+            , pkg == runGhc ? arg ("--ghc-option=-DVERSION=" ++ show (show version))
+            , commonCabalArgs (pred stage) -- We want to use the files of the previous stage
+            , configureProgramArgs
+            ]
+
+cabalSetupArgs :: Args
+cabalSetupArgs = builder (Cabal Setup) ? do
+  top   <- expr topDirectory
+  stage <- getStage
+  path  <- getContextPath
+  mconcat [ arg "configure"
+          , arg "--distdir"
+          , arg $ top -/- path
+          , commonCabalArgs stage
+          , configureStageArgs
+          ]
+
+commonCabalArgs :: Stage -> Args
+commonCabalArgs stage = do
+  verbosity <- expr getVerbosity
+  pkg       <- getPackage
+  let prefix = "${pkgroot}" ++ (if windowsHost then "" else "/..")
+  mconcat [ -- Don't strip libraries when cross compiling.
             -- TODO: We need to set @--with-strip=(stripCmdPath :: Action FilePath)@,
             -- and if it's @:@ disable stripping as well. As it is now, I believe
             -- we might have issues with stripping on Windows, as I can't see a
             -- consumer of 'stripCmdPath'.
             -- TODO: See https://github.com/snowleopard/hadrian/issues/549.
-            , flag CrossCompiling ? pure [ "--disable-executable-stripping"
+              flag CrossCompiling ? pure [ "--disable-executable-stripping"
                                          , "--disable-library-stripping" ]
             -- We don't want to strip the debug RTS
             , S.package rts ? pure [ "--disable-executable-stripping"
                                   , "--disable-library-stripping" ]
             , arg "--cabal-file"
             , arg $ pkgCabalFile pkg
-            , arg "--distdir"
-            , arg $ top -/- path
             , arg "--ipid"
             , arg "$pkg-$version"
             , arg "--prefix"
@@ -55,7 +115,6 @@ cabalBuilderArgs = builder (Cabal Setup) ? do
             , withBuilderArgs (GhcPkg Update stage)
             , bootPackageDatabaseArgs
             , libraryArgs
-            , configureArgs
             , bootPackageConstraints
             , withStaged $ Cc CompileC
             , notStage0 ? with (Ld stage)
@@ -97,9 +156,24 @@ libraryArgs = do
            then  "--enable-shared"
            else "--disable-shared" ]
 
+-- | Configure programs only
+-- Doesn't have includes relative to the stage build directory
+-- or stage specific settings
+configureProgramArgs :: Args
+configureProgramArgs = configureArgs mempty mempty
+
+-- | Configure args with stage/lib specific include directories and settings
+configureStageArgs :: Args
+configureStageArgs = do
+  let cFlags  = getStagedSettingList ConfCcArgs
+      ldFlags = getStagedSettingList ConfGccLinkerArgs
+  mconcat [ configureArgs cFlags ldFlags
+          , notStage0 ? arg "--ghc-option=-ghcversion-file=rts/include/ghcversion.h"
+          ]
+
 -- TODO: LD_OPTS?
-configureArgs :: Args
-configureArgs = do
+configureArgs :: Args -> Args -> Args
+configureArgs cFlags' ldFlags' = do
     top  <- expr topDirectory
     pkg  <- getPackage
     let conf key expr = do
@@ -107,11 +181,12 @@ configureArgs = do
             not (null values) ?
                 arg ("--configure-option=" ++ key ++ "=" ++ values)
         cFlags   = mconcat [ remove ["-Werror"] cArgs
-                           , getStagedSettingList ConfCcArgs
                            -- See https://github.com/snowleopard/hadrian/issues/523
                            , arg $ "-iquote"
-                           , arg $ top -/- pkgPath pkg ]
-        ldFlags  = ldArgs  <> (getStagedSettingList ConfGccLinkerArgs)
+                           , arg $ top -/- pkgPath pkg
+                           , cFlags'
+                           ]
+        ldFlags  = ldArgs <> ldFlags'
     cldFlags <- unwords <$> (cFlags <> ldFlags)
     mconcat
         [ conf "CFLAGS"   cFlags
@@ -124,7 +199,6 @@ configureArgs = do
         , conf "--with-curses-libraries"  $ arg =<< getSetting CursesLibDir
         , conf "--host"                   $ arg =<< getSetting TargetPlatformFull
         , conf "--with-cc" $ arg =<< getBuilderPath . (Cc CompileC) =<< getStage
-        , notStage0 ? arg "--ghc-option=-ghcversion-file=rts/include/ghcversion.h"
         ]
 
 bootPackageConstraints :: Args

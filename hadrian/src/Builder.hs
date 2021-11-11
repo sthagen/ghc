@@ -85,7 +85,12 @@ instance NFData   GhcMode
 --   This instructs package configuration functions (such as 'configurePackage')
 --   to enable the @profiling@ Cabal flag when processing @rts.cabal@ and
 --   building RTS with profiling information.
-data ConfigurationInfo = Setup | Flags deriving (Eq, Generic, Show)
+data ConfigurationInfo
+  = Setup
+  | Flags
+  | Build
+  | ListBin
+  deriving (Eq, Generic, Show)
 
 instance Binary   ConfigurationInfo
 instance Hashable ConfigurationInfo
@@ -255,6 +260,11 @@ instance H.Builder Builder where
               withTempFile $ \temp -> do
                 () <- cmd' [path] (buildArgs ++ ["--only-report-hadrian-deps", temp])
                 readFile' temp
+        Cabal ListBin _ -> do
+          path <- builderPath builder
+          withResources buildResources $ do
+            Stdout stdout <- cmd' [path] buildArgs
+            pure stdout
         _ -> error $ "Builder " ++ show builder ++ " can not be asked!"
 
     runBuilderWith :: Builder -> BuildInfo -> Action ()
@@ -390,6 +400,7 @@ systemBuilderPath builder = case builder of
     Tar _           -> fromKey "tar"
     Xelatex         -> fromKey "xelatex"
     Makeindex       -> fromKey "makeindex"
+    Cabal _ _       -> fromKey "cabal"
     _               -> error $ "No entry for " ++ show builder ++ inCfg
   where
     inCfg = " in " ++ quote configFile ++ " file."

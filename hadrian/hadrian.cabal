@@ -66,6 +66,7 @@ executable hadrian
                        , Packages
                        , Rules
                        , Rules.BinaryDist
+                       , Rules.CabalReinstall
                        , Rules.Clean
                        , Rules.Compile
                        , Rules.Dependencies
@@ -153,6 +154,7 @@ executable hadrian
                        -Wredundant-constraints
                        -fno-warn-name-shadowing
                        -rtsopts
+                       -fno-ignore-asserts
 
     if flag(threaded)
       ghc-options:
