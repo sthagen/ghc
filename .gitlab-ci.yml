@@ -902,6 +902,12 @@ nightly-x86_64-linux-deb10:
   variables:
     TEST_TYPE: slowtest
 
+nightly-cabal-reinstall-x86_64-linux-deb10:
+  <<: *nightly
+  extends: .build-x86_64-linux-deb10
+  variables:
+    REINSTALL_GHC: "yes"
+
 release-x86_64-linux-deb10:
   <<: *release
   extends: .build-x86_64-linux-deb10
