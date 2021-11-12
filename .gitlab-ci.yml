@@ -902,9 +902,20 @@ nightly-x86_64-linux-deb10:
   variables:
     TEST_TYPE: slowtest
 
-nightly-cabal-reinstall-x86_64-linux-deb10:
+nightly-cabal-reinstall-x86_64-linux-deb9:
   <<: *nightly
-  extends: .build-x86_64-linux-deb10
+  extends: .validate-linux-hadrian
+  stage: full-build
+  variables:
+    REINSTALL_GHC: "yes"
+
+test-cabal-reinstall-x86_64-linux-deb9:
+  extends: .validate-linux-hadrian
+  stage: tool-lint
+  before_script:
+    - ./boot
+    - ./configure
+    - "cabal update --index=$HACKAGE_INDEX_STATE --project-file=cabal.project"
   variables:
     REINSTALL_GHC: "yes"
 
