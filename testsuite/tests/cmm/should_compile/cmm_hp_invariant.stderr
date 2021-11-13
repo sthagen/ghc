@@ -1,0 +1,10 @@
+ghc: panic! (the 'impossible' happened)
+  GHC version 9.3.20211112:
+	Cmm Hp invariant violated. The NCG backend currently assumes that
+we never use Hp to read from memory. Nor any values which alias to Hp.
+If you are using hand-written Cmm please adjust your code accordingly.
+If you are not please report this as a GHC bug.
+
+
+Please report this as a GHC bug:  https://www.haskell.org/ghc/reportabug
+

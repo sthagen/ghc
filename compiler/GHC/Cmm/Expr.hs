@@ -53,7 +53,7 @@ import GHC.Types.Basic (Alignment, mkAlignment, alignmentOf)
 -----------------------------------------------------------------------------
 
 data CmmExpr
-  = CmmLit !CmmLit               -- Literal
+  = CmmLit !CmmLit              -- Literal
   | CmmLoad !CmmExpr !CmmType   -- Read memory location
   | CmmReg !CmmReg              -- Contents of register
   | CmmMachOp MachOp [CmmExpr]  -- Machine operation (+, -, *, etc.)
@@ -75,6 +75,10 @@ instance Eq CmmExpr where       -- Equality ignores the types
   CmmMachOp op1 es1  == CmmMachOp op2 es2  = op1==op2 && es1==es2
   CmmStackSlot a1 i1 == CmmStackSlot a2 i2 = a1==a2 && i1==i2
   _e1                == _e2                = False
+
+-- Useful for debugging.
+instance Outputable CmmExpr where
+  ppr = text . show
 
 data CmmReg
   = CmmLocal  {-# UNPACK #-} !LocalReg
@@ -379,6 +383,34 @@ instance Ord r => UserOfRegs r r where
 instance Ord r => DefinerOfRegs r r where
     foldRegsDefd _ f z r = f z r
 
+-- | This is a instance of convenience.
+-- For performance sensitive code paths rather
+-- fold over local and global regs separately.
+instance UserOfRegs CmmReg GlobalReg where
+    {-# INLINEABLE foldRegsUsed #-}
+    foldRegsUsed _ f z reg = f z (CmmGlobal reg)
+
+-- | This is a instance of convenience.
+-- For performance sensitive code paths rather
+-- fold over local and global regs separately.
+instance DefinerOfRegs CmmReg GlobalReg where
+    foldRegsDefd _ f z reg  = f z (CmmGlobal reg)
+
+-- | This is a instance of convenience.
+-- For performance sensitive code paths rather
+-- fold over local and global regs separately.
+instance UserOfRegs CmmReg LocalReg where
+    {-# INLINEABLE foldRegsUsed #-}
+    foldRegsUsed _ f z reg  = f z (CmmLocal reg)
+
+-- | This is a instance of convenience.
+-- For performance sensitive code paths rather
+-- fold over local and global regs separately.
+instance DefinerOfRegs CmmReg LocalReg where
+    {-# INLINEABLE foldRegsDefd #-}
+    foldRegsDefd _ f z reg  = f z (CmmLocal reg)
+
+
 instance (Ord r, UserOfRegs r CmmReg) => UserOfRegs r CmmExpr where
   -- The (Ord r) in the context is necessary here
   -- See Note [Recursive superclasses] in GHC.Tc.TyCl.Instance
@@ -527,71 +559,74 @@ instance Eq GlobalReg where
 -- NOTE: this Ord instance affects the tuple layout in GHCi, see
 --       Note [GHCi tuple layout]
 instance Ord GlobalReg where
-   compare (VanillaReg i _) (VanillaReg j _) = compare i j
-     -- Ignore type when seeking clashes
-   compare (FloatReg i)  (FloatReg  j) = compare i j
-   compare (DoubleReg i) (DoubleReg j) = compare i j
-   compare (LongReg i)   (LongReg   j) = compare i j
-   compare (XmmReg i)    (XmmReg    j) = compare i j
-   compare (YmmReg i)    (YmmReg    j) = compare i j
-   compare (ZmmReg i)    (ZmmReg    j) = compare i j
-   compare Sp Sp = EQ
-   compare SpLim SpLim = EQ
-   compare Hp Hp = EQ
-   compare HpLim HpLim = EQ
-   compare CCCS CCCS = EQ
-   compare CurrentTSO CurrentTSO = EQ
-   compare CurrentNursery CurrentNursery = EQ
-   compare HpAlloc HpAlloc = EQ
-   compare EagerBlackholeInfo EagerBlackholeInfo = EQ
-   compare GCEnter1 GCEnter1 = EQ
-   compare GCFun GCFun = EQ
-   compare BaseReg BaseReg = EQ
-   compare MachSp MachSp = EQ
-   compare UnwindReturnReg UnwindReturnReg = EQ
-   compare PicBaseReg PicBaseReg = EQ
-   compare (VanillaReg _ _) _ = LT
-   compare _ (VanillaReg _ _) = GT
-   compare (FloatReg _) _     = LT
-   compare _ (FloatReg _)     = GT
-   compare (DoubleReg _) _    = LT
-   compare _ (DoubleReg _)    = GT
-   compare (LongReg _) _      = LT
-   compare _ (LongReg _)      = GT
-   compare (XmmReg _) _       = LT
-   compare _ (XmmReg _)       = GT
-   compare (YmmReg _) _       = LT
-   compare _ (YmmReg _)       = GT
-   compare (ZmmReg _) _       = LT
-   compare _ (ZmmReg _)       = GT
-   compare Sp _ = LT
-   compare _ Sp = GT
-   compare SpLim _ = LT
-   compare _ SpLim = GT
-   compare Hp _ = LT
-   compare _ Hp = GT
-   compare HpLim _ = LT
-   compare _ HpLim = GT
-   compare CCCS _ = LT
-   compare _ CCCS = GT
-   compare CurrentTSO _ = LT
-   compare _ CurrentTSO = GT
-   compare CurrentNursery _ = LT
-   compare _ CurrentNursery = GT
-   compare HpAlloc _ = LT
-   compare _ HpAlloc = GT
-   compare GCEnter1 _ = LT
-   compare _ GCEnter1 = GT
-   compare GCFun _ = LT
-   compare _ GCFun = GT
-   compare BaseReg _ = LT
-   compare _ BaseReg = GT
-   compare MachSp _ = LT
-   compare _ MachSp = GT
-   compare UnwindReturnReg _ = LT
-   compare _ UnwindReturnReg = GT
-   compare EagerBlackholeInfo _ = LT
-   compare _ EagerBlackholeInfo = GT
+    compare = compareGlobal
+
+compareGlobal :: GlobalReg -> GlobalReg -> Ordering
+compareGlobal (VanillaReg i _) (VanillaReg j _) = compare i j
+  -- Ignore type when seeking clashes
+compareGlobal (FloatReg i)  (FloatReg  j) = compare i j
+compareGlobal (DoubleReg i) (DoubleReg j) = compare i j
+compareGlobal (LongReg i)   (LongReg   j) = compare i j
+compareGlobal (XmmReg i)    (XmmReg    j) = compare i j
+compareGlobal (YmmReg i)    (YmmReg    j) = compare i j
+compareGlobal (ZmmReg i)    (ZmmReg    j) = compare i j
+compareGlobal Sp Sp = EQ
+compareGlobal SpLim SpLim = EQ
+compareGlobal Hp Hp = EQ
+compareGlobal HpLim HpLim = EQ
+compareGlobal CCCS CCCS = EQ
+compareGlobal CurrentTSO CurrentTSO = EQ
+compareGlobal CurrentNursery CurrentNursery = EQ
+compareGlobal HpAlloc HpAlloc = EQ
+compareGlobal EagerBlackholeInfo EagerBlackholeInfo = EQ
+compareGlobal GCEnter1 GCEnter1 = EQ
+compareGlobal GCFun GCFun = EQ
+compareGlobal BaseReg BaseReg = EQ
+compareGlobal MachSp MachSp = EQ
+compareGlobal UnwindReturnReg UnwindReturnReg = EQ
+compareGlobal PicBaseReg PicBaseReg = EQ
+compareGlobal (VanillaReg _ _) _ = LT
+compareGlobal _ (VanillaReg _ _) = GT
+compareGlobal (FloatReg _) _     = LT
+compareGlobal _ (FloatReg _)     = GT
+compareGlobal (DoubleReg _) _    = LT
+compareGlobal _ (DoubleReg _)    = GT
+compareGlobal (LongReg _) _      = LT
+compareGlobal _ (LongReg _)      = GT
+compareGlobal (XmmReg _) _       = LT
+compareGlobal _ (XmmReg _)       = GT
+compareGlobal (YmmReg _) _       = LT
+compareGlobal _ (YmmReg _)       = GT
+compareGlobal (ZmmReg _) _       = LT
+compareGlobal _ (ZmmReg _)       = GT
+compareGlobal Sp _ = LT
+compareGlobal _ Sp = GT
+compareGlobal SpLim _ = LT
+compareGlobal _ SpLim = GT
+compareGlobal Hp _ = LT
+compareGlobal _ Hp = GT
+compareGlobal HpLim _ = LT
+compareGlobal _ HpLim = GT
+compareGlobal CCCS _ = LT
+compareGlobal _ CCCS = GT
+compareGlobal CurrentTSO _ = LT
+compareGlobal _ CurrentTSO = GT
+compareGlobal CurrentNursery _ = LT
+compareGlobal _ CurrentNursery = GT
+compareGlobal HpAlloc _ = LT
+compareGlobal _ HpAlloc = GT
+compareGlobal GCEnter1 _ = LT
+compareGlobal _ GCEnter1 = GT
+compareGlobal GCFun _ = LT
+compareGlobal _ GCFun = GT
+compareGlobal BaseReg _ = LT
+compareGlobal _ BaseReg = GT
+compareGlobal MachSp _ = LT
+compareGlobal _ MachSp = GT
+compareGlobal UnwindReturnReg _ = LT
+compareGlobal _ UnwindReturnReg = GT
+compareGlobal EagerBlackholeInfo _ = LT
+compareGlobal _ EagerBlackholeInfo = GT
 
 -- convenient aliases
 baseReg, spReg, hpReg, spLimReg, hpLimReg, nodeReg,

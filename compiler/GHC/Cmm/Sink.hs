@@ -8,6 +8,7 @@ module GHC.Cmm.Sink (
 import GHC.Prelude
 
 import GHC.Cmm
+import GHC.Cmm.Alias
 import GHC.Cmm.Opt
 import GHC.Cmm.Liveness
 import GHC.Cmm.LRegSet
@@ -26,6 +27,8 @@ import Data.List (partition)
 import Data.Maybe
 
 import GHC.Exts (inline)
+
+import GHC.Utils.Outputable
 
 -- -----------------------------------------------------------------------------
 -- Sinking and inlining
@@ -152,14 +155,17 @@ type Assignments = [Assignment]
   --     x = e1
 
 cmmSink :: Platform -> CmmGraph -> CmmGraph
-cmmSink platform graph = ofBlockList (g_entry graph) $ sink mapEmpty $ blocks
+cmmSink platform graph =
+      -- pprTrace "cmmSink-hp" (pdoc platform (head blocks) $$ ppr hp_ness)
+      ofBlockList (g_entry graph) $ sink mapEmpty $ blocks
   where
   liveness = cmmLocalLivenessL platform graph
+
   getLive l = mapFindWithDefault emptyLRegSet l liveness
 
   blocks = revPostorder graph
 
-  join_pts = findJoinPoints blocks
+  join_pts = findJoinPoints blocks :: LabelMap Int -- Block -> Number of Predecessors
 
   sink :: LabelMap Assignments -> [CmmBlock] -> [CmmBlock]
   sink _ [] = []
@@ -204,6 +210,7 @@ cmmSink platform graph = ofBlockList (g_entry graph) $ sink mapEmpty $ blocks
       -- Now, drop any assignments that we will not sink any further.
       (dropped_last, assigs'') = dropAssignments platform drop_if init_live_sets assigs'
 
+      -- TODO
       drop_if :: (LocalReg, CmmExpr, AbsMem)
                       -> [LRegSet] -> (Bool, [LRegSet])
       drop_if a@(r,rhs,_) live_sets = (should_drop, live_sets')
@@ -255,20 +262,23 @@ isTrivial _ _          = False
 --
 -- annotate each node with the set of registers live *after* the node
 --
-annotate :: Platform -> LRegSet -> [CmmNode O O] -> [(LRegSet, CmmNode O O)]
-annotate platform live nodes = snd $ foldr ann (live,[]) nodes
+annotate :: Platform -> LRegSet ->  [CmmNode O O] -> [(LRegSet, CmmNode O O)]
+annotate platform live nodes = annotateLive platform live nodes
+
+annotateLive :: Platform -> LRegSet -> [CmmNode O O] -> [(LRegSet, CmmNode O O)]
+annotateLive platform live nodes = snd $ foldr ann (live,[]) nodes
   where ann n (live,nodes) = (gen_killL platform n live, (live,n) : nodes)
 
 --
--- Find the blocks that have multiple successors (join points)
+-- Find the blocks that have multiple predecessors (join points)
 --
 findJoinPoints :: [CmmBlock] -> LabelMap Int
 findJoinPoints blocks = mapFilter (>1) succ_counts
  where
-  all_succs = concatMap successors blocks
+  all_succs = concatMap successors blocks :: [Label]
 
   succ_counts :: LabelMap Int
-  succ_counts = foldr (\l -> mapInsertWith (+) l 1) mapEmpty all_succs
+  succ_counts = foldl' (\m l -> mapInsertWith (+) l 1 m) mapEmpty all_succs
 
 --
 -- filter the list of assignments to remove any assignments that
@@ -326,7 +336,9 @@ walk platform nodes assigs = go nodes emptyBlock assigs
     -- Pick up interesting assignments
     | Just a <- shouldSink platform node2 = go ns block (a : as1)
     -- Try inlining, drop assignments and move on
-    | otherwise                           = go ns block' as'
+    | otherwise                           =
+      -- pprTrace "walk_go_other:" (pdoc platform node2) $
+        go ns block' as'
     where
       -- Simplify node
       node1 = constantFoldNode platform node
@@ -421,7 +433,7 @@ toNode (r,rhs,_) = CmmAssign (CmmLocal r) rhs
 
 dropAssignmentsSimple :: Platform -> (Assignment -> Bool) -> Assignments
                       -> ([CmmNode O O], Assignments)
-dropAssignmentsSimple platform f = dropAssignments platform (\a _ -> (f a, ())) ()
+dropAssignmentsSimple platform f  = dropAssignments platform (\a _ -> (f a, ())) ()
 
 dropAssignments :: Platform -> (Assignment -> s -> (Bool, s)) -> s -> Assignments
                 -> ([CmmNode O O], Assignments)
@@ -434,7 +446,8 @@ dropAssignments platform should_drop state assigs
    go state (assig : rest) dropped kept
       | conflict  =
           let !node = toNode assig
-          in  go state' rest (node : dropped) kept
+          in  -- pprTrace "dropNode" (pdoc platform node) $
+              go state' rest (node : dropped) kept
       | otherwise = go state' rest dropped (assig:kept)
       where
         (dropit, state') = should_drop assig state
@@ -461,7 +474,9 @@ tryToInline
 
 tryToInline platform liveAfter node assigs =
   -- pprTrace "tryToInline assig length:" (ppr $ length assigs) $
-    go usages liveAfter node emptyLRegSet assigs
+    let (n,as) = go usages liveAfter node emptyLRegSet assigs
+    in -- pprTrace "inlined:" (pdoc platform n $$ ppr as)
+       (n,as)
  where
   usages :: UniqFM LocalReg Int -- Maps each LocalReg to a count of how often it is used
   usages = foldLocalRegsUsed platform addUsage emptyUFM node
@@ -655,38 +670,47 @@ okToInline _ _ _ = True
 -- @r = e@ can be safely commuted past statement @node@.
 conflicts :: Platform -> Assignment -> CmmNode O x -> Bool
 conflicts platform (r, rhs, addr) node
+  -- | pprTrace "conflicts" (ppr r $$ ppr rhs $$ ppr addr $$ pdoc platform node) False = undefined
 
   -- (1) node defines registers used by rhs of assignment. This catches
   -- assignments and all three kinds of calls. See Note [Sinking and calls]
-  | globalRegistersConflict platform rhs node                       = True
-  | localRegistersConflict  platform rhs node                       = True
+  | globalRegistersConflict platform rhs node                       = traceConflicts "conflicts1" (ppr r) True
+  | localRegistersConflict  platform rhs node                       = traceConflicts "conflicts2" (ppr r) True
 
   -- (2) node uses register defined by assignment
-  | foldRegsUsed platform (\b r' -> r == r' || b) False node        = True
+  | foldRegsUsed platform (\b r' -> r == r' || b) False node        = traceConflicts "conflicts3" (ppr r) True
 
   -- (3) a store to an address conflicts with a read of the same memory
   | CmmStore addr' e <- node
-  , memConflicts addr (loadAddr platform addr' (cmmExprWidth platform e)) = True
+  , memConflicts addr (storeAddr platform addr' (cmmExprWidth platform e))
+  = traceConflicts "conflicts4" (ppr r <+> ppr addr <+> ppr (storeAddr platform addr' (cmmExprWidth platform e)) $$
+                                 pdoc platform node)
+    True
 
   -- (4) an assignment to Hp/Sp conflicts with a heap/stack read respectively
-  | HeapMem    <- addr, CmmAssign (CmmGlobal Hp) _ <- node        = True
-  | StackMem   <- addr, CmmAssign (CmmGlobal Sp) _ <- node        = True
-  | SpMem{}    <- addr, CmmAssign (CmmGlobal Sp) _ <- node        = True
+  | HeapMem{}  <- addr, CmmAssign (CmmGlobal Hp) _ <- node        = traceConflicts "conflicts6.1" (ppr r) True
+  | StackMem   <- addr, CmmAssign (CmmGlobal Sp) _ <- node        = traceConflicts "conflicts6" (ppr r) True
+  | SpMem{}    <- addr, CmmAssign (CmmGlobal Sp) _ <- node        = traceConflicts "conflicts7" (ppr r) True
 
   -- (5) foreign calls clobber heap: see Note [Foreign calls clobber heap]
-  | CmmUnsafeForeignCall{} <- node, memConflicts addr AnyMem      = True
+  | CmmUnsafeForeignCall{} <- node, memConflicts addr AnyMem      = traceConflicts "conflicts8" (ppr r) True
 
   -- (6) suspendThread clobbers every global register not backed by a real
   -- register. It also clobbers heap and stack but this is handled by (5)
   | CmmUnsafeForeignCall (PrimTarget MO_SuspendThread) _ _ <- node
   , foldRegsUsed platform (\b g -> globalRegMaybe platform g == Nothing || b) False rhs
-  = True
+  = traceConflicts "conflicts9" (ppr r) True
 
   -- (7) native calls clobber any memory
-  | CmmCall{} <- node, memConflicts addr AnyMem                   = True
+  | CmmCall{} <- node, memConflicts addr AnyMem                   = traceConflicts "conflicts10" (ppr r) True
 
   -- (8) otherwise, no conflict
-  | otherwise = False
+  | otherwise = -- pprTrace "NoConflict" (ppr r)
+                False
+
+  where
+    -- traceConflicts s d = pprTrace s d
+    traceConflicts = \_s _d -> id
 
 {- Note [Inlining foldRegsDefd]
    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -757,117 +781,6 @@ localRegistersConflict platform expr node =
 -- foldRegsDefd and foldRegsUsed functions defined in DefinerOfRegs and
 -- UserOfRegs typeclasses.
 --
-
--- An abstraction of memory read or written.
-data AbsMem
-  = NoMem            -- no memory accessed
-  | AnyMem           -- arbitrary memory
-  | HeapMem          -- definitely heap memory
-  | StackMem         -- definitely stack memory
-  | SpMem            -- <size>[Sp+n]
-       {-# UNPACK #-} !Int
-       {-# UNPACK #-} !Int
-
--- Having SpMem is important because it lets us float loads from Sp
--- past stores to Sp as long as they don't overlap, and this helps to
--- unravel some long sequences of
---    x1 = [Sp + 8]
---    x2 = [Sp + 16]
---    ...
---    [Sp + 8]  = xi
---    [Sp + 16] = xj
---
--- Note that SpMem is invalidated if Sp is changed, but the definition
--- of 'conflicts' above handles that.
-
--- ToDo: this won't currently fix the following commonly occurring code:
---    x1 = [R1 + 8]
---    x2 = [R1 + 16]
---    ..
---    [Hp - 8] = x1
---    [Hp - 16] = x2
---    ..
-
--- because [R1 + 8] and [Hp - 8] are both HeapMem.  We know that
--- assignments to [Hp + n] do not conflict with any other heap memory,
--- but this is tricky to nail down.  What if we had
---
---   x = Hp + n
---   [x] = ...
---
---  the store to [x] should be "new heap", not "old heap".
---  Furthermore, you could imagine that if we started inlining
---  functions in Cmm then there might well be reads of heap memory
---  that was written in the same basic block.  To take advantage of
---  non-aliasing of heap memory we will have to be more clever.
-
--- Note [Foreign calls clobber heap]
--- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
---
--- It is tempting to say that foreign calls clobber only
--- non-heap/stack memory, but unfortunately we break this invariant in
--- the RTS.  For example, in stg_catch_retry_frame we call
--- stmCommitNestedTransaction() which modifies the contents of the
--- TRec it is passed (this actually caused incorrect code to be
--- generated).
---
--- Since the invariant is true for the majority of foreign calls,
--- perhaps we ought to have a special annotation for calls that can
--- modify heap/stack memory.  For now we just use the conservative
--- definition here.
---
--- Some CallishMachOp imply a memory barrier e.g. AtomicRMW and
--- therefore we should never float any memory operations across one of
--- these calls.
---
--- `suspendThread` releases the capability used by the thread, hence we mustn't
--- float accesses to heap, stack or virtual global registers stored in the
--- capability (e.g. with unregisterised build, see #19237).
-
-
-bothMems :: AbsMem -> AbsMem -> AbsMem
-bothMems NoMem    x         = x
-bothMems x        NoMem     = x
-bothMems HeapMem  HeapMem   = HeapMem
-bothMems StackMem StackMem     = StackMem
-bothMems (SpMem o1 w1) (SpMem o2 w2)
-  | o1 == o2  = SpMem o1 (max w1 w2)
-  | otherwise = StackMem
-bothMems SpMem{}  StackMem  = StackMem
-bothMems StackMem SpMem{}   = StackMem
-bothMems _         _        = AnyMem
-
-memConflicts :: AbsMem -> AbsMem -> Bool
-memConflicts NoMem      _          = False
-memConflicts _          NoMem      = False
-memConflicts HeapMem    StackMem   = False
-memConflicts StackMem   HeapMem    = False
-memConflicts SpMem{}    HeapMem    = False
-memConflicts HeapMem    SpMem{}    = False
-memConflicts (SpMem o1 w1) (SpMem o2 w2)
-  | o1 < o2   = o1 + w1 > o2
-  | otherwise = o2 + w2 > o1
-memConflicts _         _         = True
-
-exprMem :: Platform -> CmmExpr -> AbsMem
-exprMem platform (CmmLoad addr w)  = bothMems (loadAddr platform addr (typeWidth w)) (exprMem platform addr)
-exprMem platform (CmmMachOp _ es)  = foldr bothMems NoMem (map (exprMem platform) es)
-exprMem _        _                 = NoMem
-
-loadAddr :: Platform -> CmmExpr -> Width -> AbsMem
-loadAddr platform e w =
-  case e of
-   CmmReg r       -> regAddr platform r 0 w
-   CmmRegOff r i  -> regAddr platform r i w
-   _other | regUsedIn platform spReg e -> StackMem
-          | otherwise                  -> AnyMem
-
-regAddr :: Platform -> CmmReg -> Int -> Width -> AbsMem
-regAddr _      (CmmGlobal Sp) i w = SpMem i (widthInBytes w)
-regAddr _      (CmmGlobal Hp) _ _ = HeapMem
-regAddr _      (CmmGlobal CurrentTSO) _ _ = HeapMem -- important for PrimOps
-regAddr platform r _ _ | isGcPtrType (cmmRegType platform r) = HeapMem -- yay! GCPtr pays for itself
-regAddr _      _ _ _ = AnyMem
 
 {-
 Note [Inline GlobalRegs?]

@@ -16,6 +16,7 @@
 -------------------------------------------------------------------------------
 
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
+{-# OPTIONS_GHC -ddump-to-file -ddump-stg-final -ddump-cmm -ddump-cmm-sp -ddump-cmm-sink #-}
 
 module GHC.Driver.Session (
         -- * Dynamic flags and associated configuration types

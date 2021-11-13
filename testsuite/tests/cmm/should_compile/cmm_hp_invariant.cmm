@@ -1,0 +1,9 @@
+#include "Cmm.h"
+
+violate_hp_invariant (W_ counter)
+{
+  W_ x1, x2;
+  x1 = Hp + 8;
+  x2 = W_[x1+8];
+  return (x2);
+}

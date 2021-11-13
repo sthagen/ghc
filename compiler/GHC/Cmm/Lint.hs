@@ -21,6 +21,7 @@ import GHC.Cmm.Dataflow.Collections
 import GHC.Cmm.Dataflow.Graph
 import GHC.Cmm.Dataflow.Label
 import GHC.Cmm
+import GHC.Cmm.Alias
 import GHC.Cmm.Utils
 import GHC.Cmm.Liveness
 import GHC.Cmm.Switch (switchTargetsToList)
@@ -69,6 +70,9 @@ lintCmmGraph g = do
       blocks = toBlockList g
       labels = setFromList (map entryLabel blocks)
    cmmLocalLiveness platform g `seq` mapM_ (lintCmmBlock labels) blocks
+
+   lintHpReads platform g `seq` return ()
+
    -- cmmLiveness throws an error if there are registers
    -- live on entry to the graph (i.e. undefined
    -- variables)
@@ -311,4 +315,3 @@ cmmLintDubiousWordOffset expr
    = cmmLintErr (text "offset is not a multiple of words: " $$
                  nest 2 (ppr expr))
 -}
-
