@@ -918,6 +918,7 @@ data GhcLink
                         --   bytecode and object code).
   | LinkDynLib          -- ^ Link objects into a dynamic lib (DLL on Windows, DSO on ELF platforms)
   | LinkStaticLib       -- ^ Link objects into a static lib
+  | LinkMergedObj       -- ^ Link objects into a merged "GHCi object"
   deriving (Eq, Show)
 
 isNoLink :: GhcLink -> Bool
@@ -2159,6 +2160,8 @@ dynamic_flags_deps = [
         (noArg (\d -> d { ghcLink=LinkDynLib }))
   , make_ord_flag defGhcFlag "staticlib"
         (noArg (\d -> setGeneralFlag' Opt_LinkRts (d { ghcLink=LinkStaticLib })))
+  , make_ord_flag defGhcFlag "merge-objs"
+        (noArg (\d -> d { ghcLink=LinkMergedObj }))
   , make_ord_flag defGhcFlag "dynload"            (hasArg parseDynLibLoaderMode)
   , make_ord_flag defGhcFlag "dylib-install-name" (hasArg setDylibInstallName)
 
@@ -4650,6 +4653,10 @@ makeDynFlagsConsistent dflags
  , ways dflags `hasNotWay` WayProf
     = loop dflags{targetWays_ = addWay WayProf (targetWays_ dflags)}
          "Enabling -prof, because -fobject-code is enabled and GHCi is profiled"
+
+ | LinkMergedObj <- ghcLink dflags
+ , Nothing <- outputFile dflags
+ = pgmError "--output must be specified when using --merge-objs"
 
  | otherwise = (dflags, [])
     where loc = mkGeneralSrcSpan (fsLit "when making flags consistent")
