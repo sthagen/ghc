@@ -53,13 +53,14 @@ commonReinstallCabalArgs = do
     stage     <- getStage
     version   <- getSetting ProjectVersion
     threads   <- shakeThreads <$> expr getShakeOptions
-    pkg       <- getPackage
+    _pkg       <- getPackage
     mconcat [ arg "--project-file"
             , arg $ top -/- "cabal.project"
             , arg "--distdir"
             , arg $ root -/- "stage-cabal" -/- "dist-newstyle"
             , arg ("--ghc-option=-j" ++ show threads)
-            , pkg == runGhc ? arg ("--ghc-option=-DVERSION=" ++ show (show version))
+            , -- pkg == runGhc ? -- The guard causes needless rebuilds, so set it for everything
+              arg ("--ghc-option=-DVERSION=" ++ show (show version))
             , commonCabalArgs (pred stage) -- We want to use the files of the previous stage
             , configureProgramArgs
             ]

@@ -483,10 +483,9 @@ function build_hadrian() {
     run_hadrian build-cabal -V
   else
     run_hadrian binary-dist -V
+    mv _build/bindist/ghc*.tar.xz "$BIN_DIST_NAME.tar.xz"
   fi
 
-
-  mv _build/bindist/ghc*.tar.xz "$BIN_DIST_NAME.tar.xz"
 }
 
 function test_hadrian() {
