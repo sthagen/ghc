@@ -710,7 +710,7 @@ Consider matching
   Target:   \f->f
 
 where 'f' is free in the template. When we meet the lambdas we must
-remember to rename f :-> f' in the second expression, as well as x :-> f
+remember to rename f :-> f' in the target, as well as x :-> f
 in the template.  The rv_lcl::RnEnv2 does that.
 
 Similarly, consider matching
@@ -809,6 +809,8 @@ perhaps by abstracting over that variable.
 C.f. the treatment of dictionaries in GHC.HsToCore.Binds.decompseRuleLhs.
 
 For now, though, we simply behave badly, by failing in match_co.
+We really should never rely on matching the structure of a coercion
+(which is just a proof).
 
 Note [Casts in the template]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -846,8 +848,8 @@ match :: RuleMatchEnv
       -> MCoercion
       -> Maybe RuleSubst
 
--- Invariant (TypeInv): if matching succeeds, then
---                      typeof( subst(template) ) = typeof( target |> mco )
+-- Postcondition (TypeInv): if matching succeeds, then
+--                          typeof( subst(template) ) = typeof( target |> mco )
 --     But this is /not/ a pre-condition! The types of template and target
 --     may differ, see the (App e1 e2) case
 --

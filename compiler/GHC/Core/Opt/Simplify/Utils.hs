@@ -893,6 +893,7 @@ updModeForStableUnfoldings :: Activation -> SimplMode -> SimplMode
 -- See Note [Simplifying inside stable unfoldings]
 updModeForStableUnfoldings unf_act current_mode
   = current_mode { sm_phase      = phaseFromActivation unf_act
+                 , sm_eta_expand = True -- False
                  , sm_inline     = True }
     -- sm_eta_expand: see Note [Eta-expansion flag inside stable unfoldings]
     -- sm_rules: just inherit; sm_rules might be "off"
@@ -1579,6 +1580,7 @@ mkLam _env [] body _cont
   = return body
 mkLam env bndrs body cont
   = {-#SCC "mkLam" #-}
+    pprTrace "mkLam" (ppr bndrs $$ ppr body $$ ppr cont) $
     do { dflags <- getDynFlags
        ; mkLam' dflags bndrs body }
   where
@@ -1604,17 +1606,18 @@ mkLam env bndrs body cont
 
     mkLam' dflags bndrs body
       | gopt Opt_DoEtaReduction dflags
-      , Just etad_lam <- tryEtaReduce bndrs body
+      , Just etad_lam <- {-# SCC "tryee" #-} tryEtaReduce bndrs body
       = do { tick (EtaReduction (head bndrs))
            ; return etad_lam }
 
       | not (contIsRhs cont)   -- See Note [Eta-expanding lambdas]
       , sm_eta_expand (getMode env)
       , any isRuntimeVar bndrs
-      , let body_arity = exprEtaExpandArity dflags body
+      , let body_arity = {-# SCC "eta" #-} exprEtaExpandArity dflags body
       , expandableArityType body_arity
       = do { tick (EtaExpansion (head bndrs))
-           ; let res = mkLams bndrs $
+           ; let res = {-# SCC "eta3" #-}
+                       mkLams bndrs $
                        etaExpandAT in_scope body_arity body
            ; traceSmpl "eta expand" (vcat [text "before" <+> ppr (mkLams bndrs body)
                                           , text "after" <+> ppr res])
@@ -1647,7 +1650,7 @@ guard.
 NB: We check the SimplEnv (sm_eta_expand), not DynFlags.
     See Note [No eta expansion in stable unfoldings]
 
-Note [Casts and lambdas]o
+Note [Casts and lambdas]
 ~~~~~~~~~~~~~~~~~~~~~~~~
 Consider
         (\x. (\y. e) `cast` g1) `cast` g2
