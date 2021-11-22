@@ -1,0 +1,10 @@
+Stopped in <exception thrown>, <unknown>
+_exception :: e = _
+_exception = SomeExceptionWithLocation
+               (GHC.IO.Exception.IOError
+                  Nothing GHC.IO.Exception.UserError [] "error" Nothing Nothing)
+               []
+Stopped in <exception thrown>, <unknown>
+_exception :: e = SomeExceptionWithLocation
+                    (GHC.IO.Exception.IOError Nothing GHC.IO.Exception.UserError ....)
+                    []
