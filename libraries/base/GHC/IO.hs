@@ -50,6 +50,7 @@ import GHC.IO.Unsafe
 import Unsafe.Coerce ( unsafeCoerce )
 
 import {-# SOURCE #-} GHC.IO.Exception ( userError, IOError )
+import GHC.Exception.Backtrace ( collectBacktraces )
 
 -- ---------------------------------------------------------------------------
 -- The IO Monad
@@ -219,7 +220,14 @@ mplusIO m n = m `catchException` \ (_ :: IOError) -> n
 -- does not.
 -- TODO: Add backtraces here!
 throwIO :: Exception e => e -> IO a
-throwIO e = IO (raiseIO# (toException e))
+throwIO e =
+    let
+      -- TODO: Bangs should probably be moved to the data type (but then break024 and T14690 fail -
+      -- How do these bangs differ from bangs in the data type constructor?)
+      !bts = unsafePerformIO $ collectBacktraces
+      !e' = foldr addBacktrace (toException e) bts
+    in
+      IO(raiseIO# e')
 
 -- -----------------------------------------------------------------------------
 -- Controlling asynchronous exception delivery
