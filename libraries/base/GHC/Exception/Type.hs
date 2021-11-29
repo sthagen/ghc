@@ -1,7 +1,7 @@
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE Trustworthy #-}
-
+{-# LANGUAGE BangPatterns #-}
 {-# OPTIONS_HADDOCK not-home #-}
 
 -----------------------------------------------------------------------------
@@ -38,7 +38,7 @@ The @SomeExceptionWithLocation@ type is the root of the exception type hierarchy
 When an exception of type @e@ is thrown, behind the scenes it is
 encapsulated in a @SomeExceptionWithLocation@.
 -}
-data SomeExceptionWithLocation = forall e . Exception e => SomeExceptionWithLocation e [Backtrace]
+data SomeExceptionWithLocation = forall e . Exception e => SomeExceptionWithLocation !e ![Backtrace]
 
 type SomeException = SomeExceptionWithLocation
 
