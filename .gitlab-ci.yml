@@ -460,8 +460,7 @@ lint-libs:
 #################################
 
 .build-x86_64-freebsd:
-  stage: full-build
-  extends: .validate
+  extends: .validate-hadrian
   tags:
     - x86_64-freebsd
   allow_failure: true
@@ -471,10 +470,11 @@ lint-libs:
     # porting guide [1].
     # [1] https://www.freebsd.org/doc/en/books/porters-handbook/using-iconv.html)
     CONFIGURE_ARGS: "--with-gmp-includes=/usr/local/include --with-gmp-libraries=/usr/local/lib --with-iconv-includes=/usr/local/include --with-iconv-libraries=/usr/local/lib"
+    HADRIAN_ARGS: "--docs=no-sphinx"
     GHC_VERSION: "8.10.1"
     CABAL_INSTALL_VERSION: "3.2.0.0"
-    BIN_DIST_PREP_TAR_COMP: "ghc-x86_64-portbld-freebsd.tar.xz"
-    TEST_ENV: "x86_64-freebsd"
+    BIN_DIST_NAME: "ghc-x86_64-portbld-freebsd"
+    TEST_ENV: "x86_64-freebsd-hadrian"
     BUILD_FLAVOUR: "validate"
   after_script:
     - .gitlab/ci.sh save_cache
@@ -503,31 +503,6 @@ release-x86_64-freebsd:
   <<: *release
   extends: .build-x86_64-freebsd
 
-.build-x86_64-freebsd-hadrian:
-  extends: .validate-hadrian
-  tags:
-    - x86_64-freebsd
-  allow_failure: true
-  variables:
-    CONFIGURE_ARGS: "--with-gmp-includes=/usr/local/include --with-gmp-libraries=/usr/local/lib --with-iconv-includes=/usr/local/include --with-iconv-libraries=/usr/local/lib"
-    HADRIAN_ARGS: "--docs=no-sphinx"
-    GHC_VERSION: 8.6.3
-    CABAL_INSTALL_VERSION: 3.0.0.0
-    BIN_DIST_NAME: "ghc-x86_64-portbld-freebsd"
-    TEST_ENV: "x86_64-freebsd-hadrian"
-    BUILD_FLAVOUR: "validate"
-  after_script:
-    - .gitlab/ci.sh save_cache
-    - .gitlab/ci.sh clean
-    - cat ci-timings
-  artifacts:
-    when: always
-    expire_in: 2 week
-  cache:
-    key: "freebsd-$GHC_VERSION-$CACHE_REV"
-    paths:
-      - cabal-cache
-      - toolchain
 
 # Disabled due to lack of builder capacity
 .validate-x86_64-freebsd-hadrian:
@@ -651,24 +626,6 @@ release-aarch64-darwin:
   <<: *release
   extends: .build-aarch64-darwin
   stage: full-build
-
-.validate-linux:
-  extends: .validate
-  tags:
-    - x86_64-linux
-  variables:
-    BUILD_FLAVOUR: "validate"
-  before_script:
-    # workaround for docker permissions
-    - sudo chown ghc:ghc -R .
-  after_script:
-    - cp -Rf $HOME/.cabal cabal-cache
-    - cat ci-timings
-  cache:
-    key: linux-$CACHE_REV
-    paths:
-      - cabal-cache
-      - toolchain
 
 #################################
 # aarch64-linux-deb10
@@ -1279,12 +1236,9 @@ source-tarball:
     - python3 mk/get-win32-tarballs.py download all
     - ./boot
     - ./configure
-    - make sdist
-    - mv sdistprep/*.xz  .
-    - make show! --quiet VALUE=ProjectVersion > version
-    - source version
-    - echo "$ProjectVersion" > version
-
+    - hadrian/build-cabal source-dist
+    - mv _build/source-dist/*.xz .
+    - cp _build/source-dist/ghc-*/VERSION version
 
 ############################################################
 # Testing via head.hackage
