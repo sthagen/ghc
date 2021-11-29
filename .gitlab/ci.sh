@@ -47,11 +47,6 @@ Common Modes:
   shell         Run an interactive shell with a configured build environment.
   save_cache    Preserve the cabal cache
 
-Make build system:
-
-  build_make    Build GHC via the make build system
-  test_make     Test GHC via the make build system
-
 Hadrian build system
   build_hadrian Build GHC via the Hadrian build system
   test_hadrian  Test GHC via the Hadrian build system
@@ -415,22 +410,6 @@ function configure() {
   end_section "configuring"
 }
 
-function build_make() {
-  prepare_build_mk
-  if [[ -z "$BIN_DIST_PREP_TAR_COMP" ]]; then
-    fail "BIN_DIST_PREP_TAR_COMP is not set"
-  fi
-  if [[ -n "${VERBOSE:-}" ]]; then
-    MAKE_ARGS="${MAKE_ARGS:-} V=1"
-  else
-    MAKE_ARGS="${MAKE_ARGS:-} V=0"
-  fi
-
-  run "$MAKE" -j"$cores" "$MAKE_ARGS"
-  run "$MAKE" -j"$cores" binary-dist-prep TAR_COMP_OPTS=-1
-  ls -lh "$BIN_DIST_PREP_TAR_COMP"
-}
-
 function fetch_perf_notes() {
   info "Fetching perf notes..."
   "$TOP/.gitlab/test-metrics.sh" pull
@@ -452,20 +431,6 @@ function determine_metric_baseline() {
   PERF_BASELINE_COMMIT="$(git merge-base "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" HEAD)"
   export PERF_BASELINE_COMMIT
   info "Using $PERF_BASELINE_COMMIT for performance metric baseline..."
-}
-
-function test_make() {
-  if [ -n "${CROSS_TARGET:-}" ]; then
-    info "Can't test cross-compiled build."
-    return
-  fi
-
-  run "$MAKE" test_bindist TEST_PREP=YES
-  (unset $(compgen -v | grep CI_*);
-    run "$MAKE" V=0 VERBOSE=1 test \
-      THREADS="$cores" \
-      JUNIT_FILE=../../junit.xml \
-      EXTRA_RUNTEST_OPTS="${RUNTEST_ARGS:-}")
 }
 
 function build_hadrian() {
@@ -667,13 +632,6 @@ case $1 in
   usage) usage ;;
   setup) setup && cleanup_submodules ;;
   configure) time_it "configure" configure ;;
-  build_make) time_it "build" build_make ;;
-  test_make)
-    fetch_perf_notes
-    res=0
-    time_it "test" test_make || res=$?
-    push_perf_notes
-    exit $res ;;
   build_hadrian) time_it "build" build_hadrian ;;
   # N.B. Always push notes, even if the build fails. This is okay to do as the
   # testsuite driver doesn't record notes for tests that fail due to
