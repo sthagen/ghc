@@ -90,24 +90,5 @@ def autoreconf():
     if fail:
         sys.exit(1)
 
-def check_build_mk():
-    if not args.validate and not os.path.isfile("mk/build.mk"):
-        print(dedent(
-            """
-            WARNING: You don't have a mk/build.mk file.
-
-            By default a standard GHC build will be done, which uses optimisation
-            and builds the profiling libraries. This will take a long time, so may
-            not be what you want if you are developing GHC or the libraries, rather
-            than simply building it to use it.
-
-            For information on creating a mk/build.mk file, please see:
-                https://gitlab.haskell.org/ghc/ghc/wikis/building/using#build-configuration
-            """))
-
 check_boot_packages()
-if not args.hadrian:
-    boot_pkgs()
 autoreconf()
-if not args.hadrian:
-    check_build_mk()
