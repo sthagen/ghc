@@ -4,11 +4,11 @@
 module GHC.IO(
     IO(..),
     mplusIO,
-    mkUserError
+    throwIOUserError
 ) where
 
 import GHC.Types
-import {-# SOURCE #-} GHC.Exception.Type (SomeExceptionWithLocation)
+import {-# SOURCE #-} GHC.Base (String)
 
 mplusIO :: IO a -> IO a -> IO a
-mkUserError :: [Char] -> SomeExceptionWithLocation
+throwIOUserError :: String -> IO a

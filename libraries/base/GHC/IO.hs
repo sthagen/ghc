@@ -39,7 +39,7 @@ module GHC.IO (
         MaskingState(..), getMaskingState,
         unsafeUnmask, interruptible,
         onException, bracket, finally, evaluate,
-        mkUserError
+        throwIOUserError
     ) where
 
 import GHC.Base
@@ -218,7 +218,6 @@ mplusIO m n = m `catchException` \ (_ :: IOError) -> n
 -- raise an exception within the 'IO' monad because it guarantees
 -- ordering with respect to other 'IO' operations, whereas 'throw'
 -- does not.
--- TODO: Add backtraces here!
 throwIO :: Exception e => e -> IO a
 throwIO e =
     let
@@ -229,6 +228,8 @@ throwIO e =
     in
       IO(raiseIO# e')
 
+throwIOUserError :: String -> IO a
+throwIOUserError s = throwIO $ userError s
 -- -----------------------------------------------------------------------------
 -- Controlling asynchronous exception delivery
 
@@ -465,7 +466,3 @@ Since this strictness is a small optimization and may lead to surprising
 results, all of the @catch@ and @handle@ variants offered by "Control.Exception"
 use 'catch' rather than 'catchException'.
 -}
-
--- For SOURCE import by GHC.Base to define failIO.
-mkUserError       :: [Char]  -> SomeExceptionWithLocation
-mkUserError str   = toException (userError str)
