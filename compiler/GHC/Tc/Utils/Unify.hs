@@ -403,8 +403,8 @@ matchExpectedFunTys herald ctx lmatchpats orig_ty thing_inside
 
     patToBndr :: LMatchPat GhcRn -> TcM TyCoBinder
     patToBndr (L _ (VisPat _ _)) =
-      do { var <- newOpenFlexiTyVar
-         ; ty <- newFlexiTyVarTy (varType var)
+      do { ki <- newOpenTypeKind
+         ; ty <- newFlexiTyVarTy ki
          ; mult <- newFlexiTyVarTy multiplicityTy
          ; return (Anon VisArg (Scaled mult ty))
          }
