@@ -130,7 +130,7 @@ testRules = do
         -- TODO This approach doesn't work.
         -- Set environment variables for test's Makefile.
         env <- sequence
-            [ builderEnvironment "MAKE" $ Make ""
+            [ builderEnvironment "MAKE" $ Make "testsuite"
             , builderEnvironment "TEST_HC" $ Ghc CompileHs Stage2
             , AddEnv "TEST_HC_OPTS" <$> runTestGhcFlags ]
 
