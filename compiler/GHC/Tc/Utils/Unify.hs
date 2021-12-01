@@ -329,14 +329,12 @@ matchExpectedFunTys herald ctx lmatchpats orig_ty thing_inside
       Check ty -> go [] lmatchpats ty
       _        -> defer [] lmatchpats orig_ty
   where
-{-
     go vars pats ty
-      | (_, theta, _) <- tcSplitSigmaTy ty
-      , not (null theta)
+      | (tvs, theta, _) <- tcSplitSigmaTy ty
+      , not (null theta && null tvs)
       = do { (wrap_gen, (wrap_res, result)) <- tcSkolemise ctx ty $ \ty' ->
                                                go vars pats ty'
            ; return (wrap_gen <.> wrap_res, result) }
--}
 
     go bndrs (L _ (VisPat _ _):pats) (FunTy { ft_mult = mult, ft_af = VisArg, ft_arg = arg_ty, ft_res = res_ty })
       = do { (wrap_res, result) <- go (Anon VisArg scaled_arg_ty : bndrs) pats res_ty
