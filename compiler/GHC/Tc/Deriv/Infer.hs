@@ -38,6 +38,7 @@ import GHC.Tc.Types.Origin
 import GHC.Tc.Types.Constraint
 import GHC.Core.Predicate
 import GHC.Tc.Utils.TcType
+import GHC.Core.TyCo.FVs (shallowTyCoVarsOfTypes)
 import GHC.Core.TyCon
 import GHC.Core.TyCo.Ppr (pprTyVars)
 import GHC.Core.Type
@@ -48,6 +49,7 @@ import GHC.Builtin.Types (typeToTypeKind)
 import GHC.Core.Unify (tcUnifyTy)
 import GHC.Utils.Misc
 import GHC.Types.Var
+import GHC.Types.Var.Env (mkInScopeSet)
 import GHC.Types.Var.Set
 
 import Control.Monad
@@ -354,16 +356,41 @@ inferConstraintsAnyclass
              do_one_meth (sel_id, gen_dm_ty)
                = do { let (sel_tvs, _cls_pred, meth_ty)
                                    = tcSplitMethodTy (varType sel_id)
+
+                          -- Now, we substitute the meth_ty using the instantiation for
+                          -- the class variables. We could just use the instantiating
+                          -- subst as the seed for the tcInstSkolTyVarsX below, but there
+                          -- is an outside chance that meth_ty is a variable which will
+                          -- be instantiated to a polytype. If that happens, we'll want
+                          -- the tcSplitNestedSigmaTys to decompose the polytype. Hence,
+                          -- this extra little subst here.
                           meth_ty' = substTyWith sel_tvs inst_tys meth_ty
                           (meth_tvs, meth_theta, meth_tau)
                                    = tcSplitNestedSigmaTys meth_ty'
+                          subst0 = mkEmptyTCvSubst $ mkInScopeSet $ shallowTyCoVarsOfTypes inst_tys
 
+                    ; (meth_subst, meth_skol_tvs) <- tcInstSkolTyVarsX subst0 meth_tvs
+                    ; let meth_skol_theta = substTheta meth_subst meth_theta
+                          meth_skol_tau   = substTy meth_subst meth_tau
+
+                          -- See above: we subst before instantiating just in case the
+                          -- substed type gets decomposed with tcSplitNestedSigmaTys.
                           gen_dm_ty' = substTyWith cls_tvs inst_tys gen_dm_ty
                           (dm_tvs, dm_theta, dm_tau)
                                      = tcSplitNestedSigmaTys gen_dm_ty'
-                          tau_eq     = mkPrimEqPred meth_tau dm_tau
+
+                      -- We instantiate dm_tvs with fresh meta type
+                      -- variables. Currently, these can only be type variables
+                      -- quantified in generic default type signatures.
+                      -- See Note [Gathering and simplifying constraints for
+                      -- DeriveAnyClass]
+                    ; (dm_subst, dm_metas) <- newMetaTyVarsX subst0 dm_tvs
+                    ; let dm_inst_theta = substTheta dm_subst dm_theta
+                          dm_inst_tau   = substTy dm_subst dm_tau
+
+                          tau_eq = mkPrimEqPred meth_skol_tau dm_inst_tau
                     ; return (mkThetaOrigin (mkDerivOrigin wildcard) TypeLevel
-                                meth_tvs dm_tvs meth_theta (tau_eq:dm_theta)) }
+                                meth_skol_tvs dm_metas meth_skol_theta (tau_eq:dm_inst_theta)) }
 
        ; lift $ mapM do_one_meth gen_dms }
 
@@ -733,20 +760,12 @@ simplifyDeriv pred tvs thetas
                let given_pred = substTy skol_subst given
                in newEvVar given_pred
 
-             emit_wanted_constraints :: [TyVar] -> [PredOrigin] -> TcM ()
-             emit_wanted_constraints metas_to_be preds
-               = do { -- We instantiate metas_to_be with fresh meta type
-                      -- variables. Currently, these can only be type variables
-                      -- quantified in generic default type signatures.
-                      -- See Note [Gathering and simplifying constraints for
-                      -- DeriveAnyClass]
-                      (meta_subst, _meta_tvs) <- newMetaTyVars metas_to_be
-
-                    -- Now make a constraint for each of the instantiated predicates
-                    ; let wanted_subst = skol_subst `unionTCvSubst` meta_subst
-                          mk_wanted_ct (PredOrigin wanted orig t_or_k)
+             emit_wanted_constraints :: [PredOrigin] -> TcM ()
+             emit_wanted_constraints preds
+               = do { -- Make a constraint for each of the instantiated predicates
+                    ; let mk_wanted_ct (PredOrigin wanted orig t_or_k)
                             = do { ev <- newWanted orig (Just t_or_k) $
-                                         substTyUnchecked wanted_subst wanted
+                                         substTyUnchecked skol_subst wanted
                                  ; return (mkNonCanonical ev) }
                     ; cts <- mapM mk_wanted_ct preds
 
@@ -760,7 +779,6 @@ simplifyDeriv pred tvs thetas
              -- See Note [Gathering and simplifying constraints for DeriveAnyClass]
              mk_wanteds :: ThetaOrigin -> TcM WantedConstraints
              mk_wanteds (ThetaOrigin { to_anyclass_skols  = ac_skols
-                                     , to_anyclass_metas  = ac_metas
                                      , to_anyclass_givens = ac_givens
                                      , to_wanted_origins  = preds })
                = do { ac_given_evs <- mapM mk_given_ev ac_givens
@@ -770,7 +788,7 @@ simplifyDeriv pred tvs thetas
                               -- The checkConstraints bumps the TcLevel, and
                               -- wraps the wanted constraints in an implication,
                               -- when (but only when) necessary
-                           emit_wanted_constraints ac_metas preds
+                           emit_wanted_constraints preds
                     ; pure wanteds }
 
        -- See [STEP DAC BUILD]
@@ -936,6 +954,23 @@ Here:
   of bar (i.e., 'to_anyclass_skols' in 'ThetaOrigin'). The 'cc' is a unification
   variable that comes from instantiating the quantified type variable 'c' in
   $gdm_bar's type (i.e., 'to_anyclass_metas' in 'ThetaOrigin).
+
+* It is important that `b` be distinct from `cc`. In this example, this is
+  clearly the case, but it is not always so obvious when the type variables are
+  hidden behind type synonyms. Suppose the example were written like this,
+  for example:
+
+    type Method a = forall b. Ix b => a -> b -> String
+    class Foo a where
+      bar :: Method a
+      default bar :: Show a => Method a
+      bar = ...
+
+  Both method signatures quantify a `b` once the `Method` type synonym is
+  expanded. To ensure that GHC doesn't confuse the two `b`s during
+  typechecking, we instantiate the `b` in the original signature with a fresh
+  skolem and the `b` in the default signature with a fresh unification
+  variable. Doing so prevents #20719 from happening.
 
 * The (Ix b) constraint comes from the context of bar's type
   (i.e., 'to_wanted_givens' in 'ThetaOrigin'). The (Show (Maybe s)) and (Ix cc)
