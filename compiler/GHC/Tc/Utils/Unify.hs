@@ -289,7 +289,7 @@ zipLMatchPats
   -> ( [(TyCoBinder, Maybe (LMatchPat GhcRn))] -- Zipped binders
      , [LMatchPat GhcRn]         -- Leftover user-written patters
      , Type )                    -- Remainder of the type signature
-zipLMatchPats = zip_matchpats [] emptyTCvSubst
+zipLMatchPats fun_ty matchpats = zip_matchpats [] emptyTCvSubst fun_ty matchpats
   where
     finalise acc matchpats subst ty = (reverse acc, matchpats, substTy subst ty)
     zip_matchpats acc subst ty matchpats
@@ -310,6 +310,11 @@ zipLMatchPats = zip_matchpats [] emptyTCvSubst
                L _ (InvisTyVarPat _ _)       : matchpats' -> zip_matchpats ((tb', Nothing) : acc) subst' ty' matchpats'
                L _ (InvisWildTyPat _ )       : matchpats' -> zip_matchpats ((tb', Nothing) : acc) subst' ty' matchpats'
                L _ (XMatchPat x)             : _          -> noExtCon x
+      | let (all_forall_args, _) = splitForAllTyVars fun_ty
+      , let n_forall_args = length all_forall_args
+      , let all_invis_pats = length (discardLVisPats matchpats)
+      , all_invis_pats > n_forall_args
+      = panic "too many invisible arguments"
       | otherwise
       = (reverse acc, matchpats, substTy subst ty)
 
@@ -330,13 +335,6 @@ matchExpectedFunTys herald ctx lmatchpats orig_ty thing_inside
       Check ty -> go [] lmatchpats ty
       _        -> defer [] lmatchpats orig_ty
   where
-    go vars pats ty
-      | (tvs, theta, _) <- tcSplitSigmaTy ty
-      , not (null theta && null tvs)
-      = do { (wrap_gen, (wrap_res, result)) <- tcSkolemise ctx ty $ \ty' ->
-                                               go vars pats ty'
-           ; return (wrap_gen <.> wrap_res, result) }
-
     go bndrs (L _ (VisPat _ _):pats) (FunTy { ft_mult = mult, ft_af = VisArg, ft_arg = arg_ty, ft_res = res_ty })
       = do { (wrap_res, result) <- go (Anon VisArg scaled_arg_ty : bndrs) pats res_ty
            ; fun_wrap <- mkWpFun idHsWrapper wrap_res scaled_arg_ty res_ty (WpFunFunExpTy orig_ty)
@@ -344,9 +342,10 @@ matchExpectedFunTys herald ctx lmatchpats orig_ty thing_inside
       where
         scaled_arg_ty = mkScaled mult arg_ty
 
-    go bndrs (L _ (InvisTyVarPat _ _): pats) (ForAllTy bndr@(Bndr var Specified) ty')
+    go bndrs (pat@(L _ (InvisTyVarPat _ _)): pats) (ForAllTy bndr@(Bndr var Specified) ty')
       = do { (wrap_res, result) <- go (Named bndr : bndrs) pats ty'
            ; let wrap_gen = WpTyLam var
+           ; traceTc "current pattern" (ppr pat)
            ; return (wrap_gen <.> wrap_res, result) }
 
     go bndrs (L _ (InvisWildTyPat _): pats) (ForAllTy bndr@(Bndr var Inferred) ty')
@@ -354,6 +353,12 @@ matchExpectedFunTys herald ctx lmatchpats orig_ty thing_inside
            ; let wrap_gen = WpTyLam var
            ; return (wrap_gen <.> wrap_res, result) }
 
+    go vars pats ty
+      | (tvs, theta, _) <- tcSplitSigmaTy ty
+      , not (null theta && null tvs)
+      = do { (wrap_gen, (wrap_res, result)) <- tcSkolemise ctx ty $ \ty' ->
+                                                      go vars pats ty'
+           ; return (wrap_gen <.> wrap_res, result) }
     -- No more args; do this /before/ tcView, so
     -- that we do not unnecessarily unwrap synonyms
     go bndrs [] ty
@@ -421,14 +426,16 @@ matchExpectedFunTys herald ctx lmatchpats orig_ty thing_inside
     ------------
     mk_ctxt :: TcType -> TidyEnv -> TcM (TidyEnv, SDoc)
     mk_ctxt res_ty env
-      = mkPiTysMsg env herald res_ty lmatchpats
+      = do { let (bndrs_and_pats,_,_) = zipLMatchPats res_ty lmatchpats
+           ; traceTc "binders and patters" (ppr bndrs_and_pats)
+           ; bndrs' <- mapM zonkTyCoBinder (map fst bndrs_and_pats)
+           ; traceTc "matchExpectedFunTys" (ppr lmatchpats)
+           ; mkPiTysMsg env herald (reverse bndrs') res_ty lmatchpats }
 
-mkPiTysMsg :: TidyEnv -> SDoc -> TcType -> [LMatchPat GhcRn]
+mkPiTysMsg :: TidyEnv -> SDoc -> [TyCoBinder] -> TcType -> [LMatchPat GhcRn]
            -> TcM (TidyEnv, SDoc)
-mkPiTysMsg env herald res_ty lmatchpats
-  = do { let (bndrs_and_pats,_,_) = zipLMatchPats res_ty lmatchpats
-       ; bndrs' <- mapM zonkTyCoBinder (map fst bndrs_and_pats)
-       ; let fun = mkPiTys bndrs' res_ty
+mkPiTysMsg env herald bndrs res_ty lmatchpats
+  = do { let fun = mkPiTys bndrs res_ty
        ; (env', fun_ty) <- zonkTidyTcType env fun
        ; let (all_arg_tys, _) = splitFunTys fun_ty
              n_fun_args = length all_arg_tys
