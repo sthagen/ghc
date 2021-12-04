@@ -20,10 +20,11 @@
 
 module GHC.Exception.Type
        ( Exception(..)    -- Class
-       , SomeExceptionWithLocation(..), SomeException, ArithException(..)
+       , SomeExceptionWithLocation(..), SomeException(..), ArithException(..)
         , addBacktrace
        , divZeroException, overflowException, ratioZeroDenomException
        , underflowException
+       , traceException
        ) where
 
 import Data.Maybe
@@ -33,19 +34,26 @@ import GHC.Base
 import GHC.Show
 import GHC.Exception.Backtrace (Backtrace)
 
+-- TODO: Remove!
+import {-# SOURCE #-} Debug.Trace
+
 {- |
 The @SomeExceptionWithLocation@ type is the root of the exception type hierarchy.
 When an exception of type @e@ is thrown, behind the scenes it is
 encapsulated in a @SomeExceptionWithLocation@.
 -}
-data SomeExceptionWithLocation = forall e . Exception e => SomeExceptionWithLocation !e ![Backtrace]
+data SomeExceptionWithLocation = SomeExceptionWithLocation !SomeException ![Backtrace]
 
-type SomeException = SomeExceptionWithLocation
+data SomeException = forall e . Exception e => SomeException !e
 
 -- | @since 3.0
 instance Show SomeExceptionWithLocation where
     -- TODO: Print backtraces
-    showsPrec p (SomeExceptionWithLocation e _) = showsPrec p e
+    showsPrec p (SomeExceptionWithLocation (SomeException e) _) = showsPrec p e
+
+instance Show SomeException where
+    -- TODO: Fix show
+    showsPrec p (SomeException e) = showsPrec p e
 
 -- | Add a 'Backtrace' to the list of backtraces.
 --
@@ -144,8 +152,8 @@ class (Typeable e, Show e) => Exception e where
     toException   :: e -> SomeExceptionWithLocation
     fromException :: SomeExceptionWithLocation -> Maybe e
 
-    toException e = SomeExceptionWithLocation e []
-    fromException (SomeExceptionWithLocation e _) = cast e
+    toException e = SomeExceptionWithLocation (SomeException e) []
+    fromException (SomeExceptionWithLocation (SomeException e) _) = cast e
 
     -- | Render this exception value in a human-friendly manner.
     --
@@ -155,11 +163,22 @@ class (Typeable e, Show e) => Exception e where
     displayException :: e -> String
     displayException = show
 
--- | @since 3.0
+    toString :: e -> String
+    toString e = show e
+
+instance Exception SomeException where
+  toException e = SomeExceptionWithLocation e []
+  fromException (SomeExceptionWithLocation e _) = Just e
+  toString (SomeException e) = "SomeException " ++ toString e
+
 instance Exception SomeExceptionWithLocation where
     toException se = se
     fromException = Just
     displayException (SomeExceptionWithLocation e _) = displayException e
+    toString (SomeExceptionWithLocation e _) = "SomeExceptionWithLocation " ++ toString e
+
+traceException :: Exception e => e -> e
+traceException e = trace (toString e) e
 
 -- |Arithmetic exceptions.
 data ArithException
