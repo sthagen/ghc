@@ -50,7 +50,7 @@ import GHC.IO.Unsafe
 import Unsafe.Coerce ( unsafeCoerce )
 
 import {-# SOURCE #-} GHC.IO.Exception ( userError, IOError )
-import GHC.Exception.Backtrace ( collectBacktraces )
+import {-# SOURCE #-} GHC.Exception.Backtrace ( collectBacktraces )
 
 -- ---------------------------------------------------------------------------
 -- The IO Monad

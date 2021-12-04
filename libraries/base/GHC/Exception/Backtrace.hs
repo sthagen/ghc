@@ -27,7 +27,7 @@ module GHC.Exception.Backtrace
   )
 where
 
-import Data.List
+import qualified Data.List as List
 import Data.Maybe
 import GHC.Base
 import {-# SOURCE #-} GHC.ExecutionStack (Location, getStackTrace)
@@ -72,7 +72,7 @@ data BacktraceMechanism
   deriving (Eq, Show)
 
 showBacktraces :: [Backtrace] -> String
-showBacktraces bts = unlines $ intersperse "" $ map show bts
+showBacktraces bts = List.unlines $ List.intersperse "" $ map show bts
 
 currentBacktraceMechanisms :: IORef [BacktraceMechanism]
 currentBacktraceMechanisms = unsafePerformIO $ newIORef []
