@@ -335,8 +335,9 @@ matchExpectedFunTys herald ctx lmatchpats orig_ty thing_inside
       Check ty -> go [] lmatchpats ty
       _        -> defer [] lmatchpats orig_ty
   where
-    go bndrs (L _ (VisPat _ _):pats) (FunTy { ft_mult = mult, ft_af = VisArg, ft_arg = arg_ty, ft_res = res_ty })
+    go bndrs (pat@(L _ (VisPat _ _)):pats) (FunTy { ft_mult = mult, ft_af = VisArg, ft_arg = arg_ty, ft_res = res_ty })
       = do { (wrap_res, result) <- go (Anon VisArg scaled_arg_ty : bndrs) pats res_ty
+           ; traceTc "matchExpectedFunTys: current visible pattern" (ppr pat)
            ; fun_wrap <- mkWpFun idHsWrapper wrap_res scaled_arg_ty res_ty (WpFunFunExpTy orig_ty)
            ; return ( fun_wrap, result ) }
       where
@@ -345,7 +346,7 @@ matchExpectedFunTys herald ctx lmatchpats orig_ty thing_inside
     go bndrs (pat@(L _ (InvisTyVarPat _ _)): pats) (ForAllTy bndr@(Bndr var Specified) ty')
       = do { (wrap_res, result) <- go (Named bndr : bndrs) pats ty'
            ; let wrap_gen = WpTyLam var
-           ; traceTc "current pattern" (ppr pat)
+           ; traceTc "matchExpectedFunTys: current invisible pattern" (ppr pat)
            ; return (wrap_gen <.> wrap_res, result) }
 
     go bndrs (L _ (InvisWildTyPat _): pats) (ForAllTy bndr@(Bndr var Inferred) ty')
@@ -356,9 +357,10 @@ matchExpectedFunTys herald ctx lmatchpats orig_ty thing_inside
     go vars pats ty
       | (tvs, theta, _) <- tcSplitSigmaTy ty
       , not (null theta && null tvs)
-      = do { (wrap_gen, (wrap_res, result)) <- tcSkolemise ctx ty $ \ty' ->
+      = do { (wrap_gen, (wrap_res, result)) <- tcSkolemiseScoped ctx ty $ \ty' ->
                                                       go vars pats ty'
            ; return (wrap_gen <.> wrap_res, result) }
+
     -- No more args; do this /before/ tcView, so
     -- that we do not unnecessarily unwrap synonyms
     go bndrs [] ty
@@ -429,13 +431,15 @@ matchExpectedFunTys herald ctx lmatchpats orig_ty thing_inside
       = do { let (bndrs_and_pats,_,_) = zipLMatchPats res_ty lmatchpats
            ; traceTc "binders and patters" (ppr bndrs_and_pats)
            ; bndrs' <- mapM zonkTyCoBinder (map fst bndrs_and_pats)
-           ; traceTc "matchExpectedFunTys" (ppr lmatchpats)
+           ; traceTc "matchExpectedFunTys" (ppr bndrs_and_pats)
            ; mkPiTysMsg env herald (reverse bndrs') res_ty lmatchpats }
 
 mkPiTysMsg :: TidyEnv -> SDoc -> [TyCoBinder] -> TcType -> [LMatchPat GhcRn]
            -> TcM (TidyEnv, SDoc)
 mkPiTysMsg env herald bndrs res_ty lmatchpats
   = do { let fun = mkPiTys bndrs res_ty
+       ; let (bndrs_and_pats,_,_) = zipLMatchPats res_ty lmatchpats
+       ; traceTc "mkPiTysMsg: binders and patters" (ppr $ map fst bndrs_and_pats)
        ; (env', fun_ty) <- zonkTidyTcType env fun
        ; let (all_arg_tys, _) = splitFunTys fun_ty
              n_fun_args = length all_arg_tys

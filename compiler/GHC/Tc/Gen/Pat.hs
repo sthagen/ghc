@@ -350,18 +350,19 @@ tc_lpats tys penv pats
 
 tc_lmatchpat :: Scaled ExpSigmaType
              -> Checker (LMatchPat GhcRn) (LMatchPat GhcTc)
-tc_lmatchpat pat_ty penv (L l (VisPat x p)) thing_inside
+tc_lmatchpat pat_ty penv pat@(L l (VisPat x p)) thing_inside
   = do { (pat', res) <- tc_lpat pat_ty penv p thing_inside
+       ; traceTc "tc_lmatchpat: current visible pattern" (ppr pat)
        ; return (L l (VisPat x pat'), res) }
-tc_lmatchpat ty _ (L l' (InvisTyVarPat x (L l name))) thing_inside
-  = do { let ty' = scaledThing ty
-       ; unExp <- expTypeToType ty'
-       ; let var = mkLocalIdOrCoVar name Many unExp
-       ; (res,_) <- tcCheckUsage name unExp $ tcExtendIdEnv1 name var thing_inside
-       ; return (L l' (InvisTyVarPat x (L l var)),res) }
-tc_lmatchpat (Scaled _ ty) _ (L l' (InvisWildTyPat _)) thing_inside
+tc_lmatchpat ty penv pat@(L l' (InvisTyVarPat x (L l name))) thing_inside
+  = do { (wrap, id) <- tcPatBndr penv name ty
+       ; unExp <- readExpType (scaledThing ty)
+       ; (res,wrap) <- tcCheckUsage name unExp $ tcExtendIdEnv1 name id thing_inside
+       ; traceTc "tc_lmatchpat: current invisible pattern" (ppr pat)
+       ; return (L l' (InvisTyVarPat x (L l id)), res) }
+tc_lmatchpat ty _ (L l' (InvisWildTyPat _)) thing_inside
   = do { res <- thing_inside
-       ; unExp <- expTypeToType ty
+       ; unExp <- readExpType (scaledThing ty)
        ; return (L l' (InvisWildTyPat unExp), res) }
 
 tc_lmatchpats :: [Scaled ExpSigmaType]
