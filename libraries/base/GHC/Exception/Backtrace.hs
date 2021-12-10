@@ -38,7 +38,7 @@ import GHC.Ptr
 import GHC.Show
 import {-# SOURCE #-} GHC.Stack
 import {-# SOURCE #-} GHC.Stack.CCS
-import {-# SOURCE #-} GHC.Stack.CloneStack
+import GHC.Stack.CloneStack
 
 -- | An exception backtrace.
 --
