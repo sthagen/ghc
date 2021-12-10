@@ -302,14 +302,14 @@ zipLMatchPats fun_ty matchpats = zip_matchpats [] emptyTCvSubst fun_ty matchpats
                pat@(L _ (InvisTyVarPat _ _)) : matchpats' -> zip_matchpats ((tb', Just pat) : acc) subst' ty' matchpats'
                pat@(L _ (InvisWildTyPat _ )) : matchpats' -> zip_matchpats ((tb', Just pat) : acc) subst' ty' matchpats'
                L _ (VisPat _ _)              : matchpats' -> zip_matchpats ((tb', Nothing) : acc) subst' ty' matchpats'
-               L _ (XMatchPat x)             : _          -> noExtCon x
+               L _ (XMatchPat x)             : _          -> dataConCantHappen x
            else
              case matchpats of
                [] -> finalise acc matchpats subst' ty
                pat@(L _ (VisPat _ _))        : matchpats' -> zip_matchpats ((tb', Just pat) : acc) subst' ty' matchpats'
                L _ (InvisTyVarPat _ _)       : matchpats' -> zip_matchpats ((tb', Nothing) : acc) subst' ty' matchpats'
                L _ (InvisWildTyPat _ )       : matchpats' -> zip_matchpats ((tb', Nothing) : acc) subst' ty' matchpats'
-               L _ (XMatchPat x)             : _          -> noExtCon x
+               L _ (XMatchPat x)             : _          -> dataConCantHappen x
       | let (all_forall_args, _) = splitForAllTyVars fun_ty
       , let n_forall_args = length all_forall_args
       , let all_invis_pats = length (discardLVisPats matchpats)

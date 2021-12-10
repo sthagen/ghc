@@ -355,9 +355,9 @@ tc_lmatchpat pat_ty penv pat@(L l (VisPat x p)) thing_inside
        ; traceTc "tc_lmatchpat: current visible pattern" (ppr pat)
        ; return (L l (VisPat x pat'), res) }
 tc_lmatchpat ty penv pat@(L l' (InvisTyVarPat x (L l name))) thing_inside
-  = do { (wrap, id) <- tcPatBndr penv name ty
+  = do { (_, id) <- tcPatBndr penv name ty
        ; unExp <- readExpType (scaledThing ty)
-       ; (res,wrap) <- tcCheckUsage name unExp $ tcExtendIdEnv1 name id thing_inside
+       ; (res,_) <- tcCheckUsage name unExp $ tcExtendIdEnv1 name id thing_inside
        ; traceTc "tc_lmatchpat: current invisible pattern" (ppr pat)
        ; return (L l' (InvisTyVarPat x (L l id)), res) }
 tc_lmatchpat ty _ (L l' (InvisWildTyPat _)) thing_inside
