@@ -27,7 +27,7 @@ module GHC.Exception.Backtrace
   )
 where
 
-import qualified Data.List as List
+import qualified Data.OldList as List
 import Data.Maybe
 import GHC.Base
 import {-# SOURCE #-} GHC.ExecutionStack (Location, getStackTrace)
@@ -38,7 +38,7 @@ import GHC.Ptr
 import GHC.Show
 import {-# SOURCE #-} GHC.Stack
 import {-# SOURCE #-} GHC.Stack.CCS
-import GHC.Stack.CloneStack
+import {-# SOURCE #-} GHC.Stack.CloneStack
 
 -- | An exception backtrace.
 --

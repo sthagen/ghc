@@ -32,7 +32,7 @@ import Data.Typeable (Typeable, cast)
    -- loop: Data.Typeable -> GHC.Err -> GHC.Exception
 import GHC.Base
 import GHC.Show
-import {-# SOURCE #-} GHC.Exception.Backtrace (Backtrace)
+import GHC.Exception.Backtrace (Backtrace)
 
 -- TODO: Remove!
 import {-# SOURCE #-} Debug.Trace

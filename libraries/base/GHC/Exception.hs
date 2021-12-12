@@ -41,7 +41,7 @@ import GHC.Stack.Types
 import GHC.OldList
 import GHC.Prim
 import GHC.IO.Unsafe
-import {-# SOURCE #-} GHC.Exception.Backtrace (collectBacktraces)
+import GHC.Exception.Backtrace (collectBacktraces)
 import {-# SOURCE #-} GHC.Stack.CCS
 import GHC.Exception.Type
 
