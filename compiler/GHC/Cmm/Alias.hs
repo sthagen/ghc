@@ -4,7 +4,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE UndecidableInstances #-}
+-- {-# LANGUAGE UndecidableInstances #-}
 
 module GHC.Cmm.Alias
     ( AbsMem(..)
@@ -34,8 +34,8 @@ import Data.Semigroup
 import GHC.Utils.Panic (panic)
 import GHC.Cmm.Dataflow.Block (blockSplit, blockToList)
 import GHC.Cmm.Utils (regUsedIn, toBlockList)
-import GHC.Utils.Trace (pprTrace)
 import Data.List (mapAccumL)
+-- import GHC.Utils.Trace (pprTrace)
 
 -----------------------------------------------------------------------------
 -- Abstracting over memory access
@@ -43,11 +43,11 @@ import Data.List (mapAccumL)
 
 -- An abstraction of memory read or written.
 data AbsMem
-  = NoMem            -- no memory accessed
-  | AnyMem           -- arbitrary memory
-  | HeapMem !HeapType
-  | StackMem         -- definitely stack memory
-  | SpMem            -- <size>[Sp+n]
+  = NoMem            -- ^ no memory accessed
+  | AnyMem           -- ^ arbitrary memory
+  | HeapMem !HeapType-- ^ heap memory
+  | StackMem         -- ^ definitely stack memory
+  | SpMem            -- ^ <size>[Sp+n] see Note [SpMem Aliasing]
        {-# UNPACK #-} !Int
        {-# UNPACK #-} !Int
   deriving Show
@@ -55,6 +55,7 @@ data AbsMem
 instance Outputable AbsMem where
   ppr x = parens (text . show $ x)
 
+-- See Note [Heap Kinds]
 data HeapType = OldHeap | NewHeap | AnyHeap deriving (Show,Eq)
 
 bothHeaps :: HeapType -> HeapType -> HeapType
@@ -88,156 +89,90 @@ We want to inline the assignments to get:
 To achieve this we split heap memory references into three kinds.
 OldHeap, NewHeap, AnyHeap.
 
-* Reading from heap memory is defined to be OldHeap.
-* Writing to HpReg is defined to be a reference to NewHeap.
-* Reading from Hp for assignmentsis defined to be AnyHeap
-
+* Reading from regular heap memory is defined to be OldHeap.
+* Writing to regular heap memory is defined to be AnyHeap.
+* Writing via HpReg is defined to be NewHeap.
+* An expression depending on New+Old heap is treated as AnyHeap
+* Reading via HpReg currently doesn't happen by construction.
+  We check for this during CmmLint and panic if it happens.
 
 New/OldHeap don't conflict. All other references do conflict.
 
-Examples
+This means we can sink reads from `OldHeap` past writes to `NewHeap` (Hp)
+giving use better code as we can remove all the intermediate variables which
+sometimes used to get spilled to the C stack.
 
-  c1 = [R1 + 8]
-  [Hp-16] = c1
-  => Can be sunk as Old/New don't conflict.
-
-  [Hp-16] = c1
-  d = [Hp-24]
-  [Hp-24] = c2
-  e = d
-  => The assignment to d conflicts with the write to [Hp-24].
-     `[Hp-24]` is AnyHeap which will conflict with a write to NewHeap.
-
--- Dangerous, but works out fine.
-  x = [Hp-16]
-  y = x
-  [Hp-16] = 0
-  z = x
-=> We would drop the assignment to x before the write to [Hp-16]
-
-This is of course a hack. Because we will sink into an assignment
-to [Hp-8], but not into one for x = Hp; [x-8].
-Even though they are the same.
-
-It also depends on Hp never being used to write to "old" heap. This
+This depends on Hp never being used to write to "old" heap. This
 isn't something our code generation ever does, so that seems fine.
 
 It makes easy to break this optimization in Hand-written Cmm though.
 Not sure it matters. Code that uses HP to alias non-newly allocated
 heap seems pretty out there.
 
------------------------
+To avoid unexpected breakage for hand written Cmm or in the case of future
+refactors of the Cmm backend we check that we don't read heap mem via the
+HpReg in CmmLink.
 
-Informally we can look at why this is safe. If we trip on aliasing it
-means we sink a read *past* an aliased write.
+--------------------------------------------------------------------------------
 
-That is we start semantically with a variant of: x = [mem1]; [mem2] = y but rewrite
-it later to [mem2] = y; x = [mem1]. Where mem1 and mem2 are aliased.
+Note [SpMem Aliasing]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Having SpMem is important because it lets us float loads from Sp
+past stores to Sp as long as they don't overlap, and this helps to
+unravel some long sequences of
+   x1 = [Sp + 8]
+   x2 = [Sp + 16]
+   ...
+   [Sp + 8]  = xi
+   [Sp + 16] = xj
 
-What prevents this is the `conflicts` check on stores.
-In broad strokes we are checking for `memConflicts (memExpr [mem1]) (storeAddr [mem2]).
+Note that SpMem is invalidated if Sp is changed, but the definition
+of 'conflicts' above handles that.
 
-We haven't changed the behaviour for heap vs non-heap memory. So the only way we introduce
-failure is if *both* expressions are determined to be some kind of heap memory.
+ToDo: this won't currently fix the following commonly occurring code:
+   x1 = [R1 + 8]
+   x2 = [R1 + 16]
+   ..
+   [Hp - 8] = x1
+   [Hp - 16] = x2
+   ..
 
-We have these combinations:
+because [R1 + 8] and [Hp - 8] are both HeapMem.  We know that
+assignments to [Hp + n] do not conflict with any other heap memory,
+but this is tricky to nail down.  What if we had
 
-Store | Load -> Resolution
-~~~~~~~~~~~~~~~~~~~~~~~~
-  Any | _    -> Conflicts
-  _   | Any  -> Conflicts
-  New | New  -> Conflicts
-  Old | Old  -> Conflicts
-  New | Old  -> No conflict
-  Old | New  -> Impossible
+  x = Hp + n
+  [x] = ...
 
-Old|New is impossible since loads only get assigned HeapAny or HeapOld.
-This leaves the combination of New|Old.
+ the store to [x] should be "new heap", not "old heap".
+ Furthermore, you could imagine that if we started inlining
+ functions in Cmm then there might well be reads of heap memory
+ that was written in the same basic block.  To take advantage of
+ non-aliasing of heap memory we will have to be more clever.
 
-New implies the store is of the kind `[Hp+offset] = <e>`. (See `storeAddr`).
-While Old implies the RHS of the assignment we went to sink past the store:
-* Does not mention Hp (or we would get Any instead of Old)
-* Mentions some Gc pointer.
+Note [Foreign calls clobber heap]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+It is tempting to say that foreign calls clobber only
+non-heap/stack memory, but unfortunately we break this invariant in
+the RTS.  For example, in stg_catch_retry_frame we call
+stmCommitNestedTransaction() which modifies the contents of the
+TRec it is passed (this actually caused incorrect code to be
+generated).
 
-So we can narrow down our failure modes to a pattern of the kind:
+Since the invariant is true for the majority of foreign calls,
+perhaps we ought to have a special annotation for calls that can
+modify heap/stack memory.  For now we just use the conservative
+definition here.
 
-foo = [gcPtr<op>e]
-[Hp+off] = <e>
+Some CallishMachOp imply a memory barrier e.g. AtomicRMW and
+therefore we should never float any memory operations across one of
+these calls.
 
-The failure case then becomes that gcPtr<op>e and [Hp+off] alias. Can this arise?
-
-bar = Hp + off
-foo = [bar]
-[Hp+off] = <e>
-
-If bar isn't sunk into foo then we indeed we can end up with:
-
-1 bar = Hp + off
-3 [Hp+off] = <e>
-2 foo = [bar]
-
-This is because foo looks like a regular GcPtr to CmmSink. God damnit.
-We could avoid this by making "references Hp" a transitive property.
-
-Not sure how to best do this though.
+`suspendThread` releases the capability used by the thread, hence we mustn't
+float accesses to heap, stack or virtual global registers stored in the
+capability (e.g. with unregisterised build, see #19237).
 
 -}
-
--- Having SpMem is important because it lets us float loads from Sp
--- past stores to Sp as long as they don't overlap, and this helps to
--- unravel some long sequences of
---    x1 = [Sp + 8]
---    x2 = [Sp + 16]
---    ...
---    [Sp + 8]  = xi
---    [Sp + 16] = xj
---
--- Note that SpMem is invalidated if Sp is changed, but the definition
--- of 'conflicts' above handles that.
-
--- ToDo: this won't currently fix the following commonly occurring code:
---    x1 = [R1 + 8]
---    x2 = [R1 + 16]
---    ..
---    [Hp - 8] = x1
---    [Hp - 16] = x2
---    ..
-
--- because [R1 + 8] and [Hp - 8] are both HeapMem.  We know that
--- assignments to [Hp + n] do not conflict with any other heap memory,
--- but this is tricky to nail down.  What if we had
---
---   x = Hp + n
---   [x] = ...
---
---  the store to [x] should be "new heap", not "old heap".
---  Furthermore, you could imagine that if we started inlining
---  functions in Cmm then there might well be reads of heap memory
---  that was written in the same basic block.  To take advantage of
---  non-aliasing of heap memory we will have to be more clever.
-
--- Note [Foreign calls clobber heap]
--- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
---
--- It is tempting to say that foreign calls clobber only
--- non-heap/stack memory, but unfortunately we break this invariant in
--- the RTS.  For example, in stg_catch_retry_frame we call
--- stmCommitNestedTransaction() which modifies the contents of the
--- TRec it is passed (this actually caused incorrect code to be
--- generated).
---
--- Since the invariant is true for the majority of foreign calls,
--- perhaps we ought to have a special annotation for calls that can
--- modify heap/stack memory.  For now we just use the conservative
--- definition here.
---
--- Some CallishMachOp imply a memory barrier e.g. AtomicRMW and
--- therefore we should never float any memory operations across one of
--- these calls.
---
--- `suspendThread` releases the capability used by the thread, hence we mustn't
--- float accesses to heap, stack or virtual global registers stored in the
--- capability (e.g. with unregisterised build, see #19237).
 
 bothMems :: AbsMem -> AbsMem -> AbsMem
 bothMems NoMem    x         = x
@@ -286,7 +221,9 @@ regAddr :: Platform -> Bool -> CmmReg -> Int -> Width -> AbsMem
 regAddr _ _store   (CmmGlobal Sp) i w = SpMem i (widthInBytes w)
 regAddr _ is_store (CmmGlobal Hp) _ _
     | is_store  = HeapMem NewHeap
-    | otherwise = panic hp_mem_msg -- HeapMem AnyHeap
+    | otherwise = panic hp_mem_msg -- Currently we never read from Hp. But if we ever do we
+                                   -- need to check for aliasing in CmmSink instead of just
+                                   -- doing it during Lint. (Returning `HeapMem AnyHeap` in that case).
 regAddr _ __store   (CmmGlobal CurrentTSO) _ _ = HeapMem (AnyHeap) -- important for PrimOps
 regAddr platform is_store r _ _
     | isGcPtrType (cmmRegType platform r)
@@ -304,8 +241,10 @@ regAddr _ _store _ _ _ = AnyMem
 -----------------------------------------------------------------------------
 
 exprMemHp :: Platform -> HpSet -> CmmExpr -> AbsMem
-exprMemHp platform hps (CmmLoad addr w) = pprTrace "exprMemHp" (ppr addr) $ bothMems (loadAddrHp platform hps addr (typeWidth w)) (exprMemHp platform hps addr)
-exprMemHp platform hps (CmmMachOp _ es) = pprTrace "exprMemHp" (ppr es) $ Prelude.foldr (\l r -> l `seq` r `seq` bothMems l r) NoMem (fmap (exprMemHp platform hps) es)
+exprMemHp platform hps (CmmLoad addr w) = -- pprTrace "exprMemHp" (ppr addr) $
+                                          bothMems (loadAddrHp platform hps addr (typeWidth w)) (exprMemHp platform hps addr)
+exprMemHp platform hps (CmmMachOp _ es) = -- pprTrace "exprMemHp" (ppr es) $
+                                          Prelude.foldr (\l r -> l `seq` r `seq` bothMems l r) NoMem (fmap (exprMemHp platform hps) es)
 exprMemHp _        _   _                = NoMem
 
 loadAddrHp, storeAddrHp :: Platform -> HpSet -> CmmExpr -> Width -> AbsMem
@@ -313,7 +252,7 @@ loadAddrHp p hps = refAddrHp p hps False
 storeAddrHp p hps = refAddrHp p hps True
 
 refAddrHp :: Platform -> HpSet -> Bool -> CmmExpr -> Width -> AbsMem
-refAddrHp platform hps is_store e w = pprTrace "refAddrHp" (ppr e) $
+refAddrHp platform hps is_store e w = -- pprTrace "refAddrHp" (ppr e) $
   case e of
    CmmReg r       -> regAddrHp platform hps is_store r 0 w
    CmmRegOff r i  -> regAddrHp platform hps is_store r i w
