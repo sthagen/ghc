@@ -385,7 +385,6 @@ hpLattice = DataflowLattice emptyHpSet add
                       else changedIf changed old
 
 -- Compute info for one node
-{-# INLINEABLE get_node_hps #-}
 get_node_hps
     ::  ( OutputableP Platform (CmmNode e x)
         )

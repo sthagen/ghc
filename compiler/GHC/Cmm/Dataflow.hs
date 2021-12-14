@@ -32,7 +32,7 @@ module GHC.Cmm.Dataflow
   , changedIf
   , joinOutFacts
   , joinFacts
-  ,blockTransferFwd)
+  , blockTransferFwd)
 where
 
 import GHC.Prelude

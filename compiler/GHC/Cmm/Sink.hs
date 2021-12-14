@@ -155,12 +155,9 @@ type Assignments = [Assignment]
   --     x = e1
 
 cmmSink :: Platform -> CmmGraph -> CmmGraph
-cmmSink platform graph =
-      -- pprTrace "cmmSink-hp" (pdoc platform (head blocks) $$ ppr hp_ness)
-      ofBlockList (g_entry graph) $ sink mapEmpty $ blocks
+cmmSink platform graph = ofBlockList (g_entry graph) $ sink mapEmpty $ blocks
   where
   liveness = cmmLocalLivenessL platform graph
-
   getLive l = mapFindWithDefault emptyLRegSet l liveness
 
   blocks = revPostorder graph
@@ -210,7 +207,6 @@ cmmSink platform graph =
       -- Now, drop any assignments that we will not sink any further.
       (dropped_last, assigs'') = dropAssignments platform drop_if init_live_sets assigs'
 
-      -- TODO
       drop_if :: (LocalReg, CmmExpr, AbsMem)
                       -> [LRegSet] -> (Bool, [LRegSet])
       drop_if a@(r,rhs,_) live_sets = (should_drop, live_sets')
@@ -262,15 +258,12 @@ isTrivial _ _          = False
 --
 -- annotate each node with the set of registers live *after* the node
 --
-annotate :: Platform -> LRegSet ->  [CmmNode O O] -> [(LRegSet, CmmNode O O)]
-annotate platform live nodes = annotateLive platform live nodes
-
-annotateLive :: Platform -> LRegSet -> [CmmNode O O] -> [(LRegSet, CmmNode O O)]
-annotateLive platform live nodes = snd $ foldr ann (live,[]) nodes
+annotate :: Platform -> LRegSet -> [CmmNode O O] -> [(LRegSet, CmmNode O O)]
+annotate platform live nodes = snd $ foldr ann (live,[]) nodes
   where ann n (live,nodes) = (gen_killL platform n live, (live,n) : nodes)
 
 --
--- Find the blocks that have multiple predecessors (join points)
+-- Find the blocks that have multiple successors (join points)
 --
 findJoinPoints :: [CmmBlock] -> LabelMap Int
 findJoinPoints blocks = mapFilter (>1) succ_counts
@@ -336,9 +329,7 @@ walk platform nodes assigs = go nodes emptyBlock assigs
     -- Pick up interesting assignments
     | Just a <- shouldSink platform node2 = go ns block (a : as1)
     -- Try inlining, drop assignments and move on
-    | otherwise                           =
-      -- pprTrace "walk_go_other:" (pdoc platform node2) $
-        go ns block' as'
+    | otherwise                           = go ns block' as'
     where
       -- Simplify node
       node1 = constantFoldNode platform node
@@ -433,7 +424,7 @@ toNode (r,rhs,_) = CmmAssign (CmmLocal r) rhs
 
 dropAssignmentsSimple :: Platform -> (Assignment -> Bool) -> Assignments
                       -> ([CmmNode O O], Assignments)
-dropAssignmentsSimple platform f  = dropAssignments platform (\a _ -> (f a, ())) ()
+dropAssignmentsSimple platform f = dropAssignments platform (\a _ -> (f a, ())) ()
 
 dropAssignments :: Platform -> (Assignment -> s -> (Bool, s)) -> s -> Assignments
                 -> ([CmmNode O O], Assignments)
@@ -446,8 +437,7 @@ dropAssignments platform should_drop state assigs
    go state (assig : rest) dropped kept
       | conflict  =
           let !node = toNode assig
-          in  -- pprTrace "dropNode" (pdoc platform node) $
-              go state' rest (node : dropped) kept
+          in  go state' rest (node : dropped) kept
       | otherwise = go state' rest dropped (assig:kept)
       where
         (dropit, state') = should_drop assig state
@@ -670,7 +660,6 @@ okToInline _ _ _ = True
 -- @r = e@ can be safely commuted past statement @node@.
 conflicts :: Platform -> Assignment -> CmmNode O x -> Bool
 conflicts platform (r, rhs, addr) node
-  -- | pprTrace "conflicts" (ppr r $$ ppr rhs $$ ppr addr $$ pdoc platform node) False = undefined
 
   -- (1) node defines registers used by rhs of assignment. This catches
   -- assignments and all three kinds of calls. See Note [Sinking and calls]
@@ -705,9 +694,8 @@ conflicts platform (r, rhs, addr) node
   | CmmCall{} <- node, memConflicts addr AnyMem                   = traceConflicts "conflicts10" (ppr r) True
 
   -- (8) otherwise, no conflict
-  | otherwise = -- pprTrace "NoConflict" (ppr r)
+  | otherwise = traceConflicts "NoConflict" (ppr r)
                 False
-
   where
     -- traceConflicts s d = pprTrace s d
     traceConflicts = \_s _d -> id

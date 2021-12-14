@@ -315,3 +315,4 @@ cmmLintDubiousWordOffset expr
    = cmmLintErr (text "offset is not a multiple of words: " $$
                  nest 2 (ppr expr))
 -}
+
