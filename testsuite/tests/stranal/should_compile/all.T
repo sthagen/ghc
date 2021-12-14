@@ -77,3 +77,4 @@ test('T19882b', normal, compile, [''])
 # We want that the 'go' joinrec in the unfolding has been worker/wrappered.
 # So we simply grep for 'jump $wgo' and hope we find more than 2 call sites:
 test('T20510', [ grep_errmsg(r'jump \$wgo') ], compile, ['-dsuppress-uniques -ddump-exitify'])
+test('T20817', [ grep_errmsg(r'Str') ], compile, ['-dsuppress-uniques -ddump-stranal'])

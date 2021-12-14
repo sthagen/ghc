@@ -11,7 +11,6 @@ import GHC.Prelude
 
 import GHC.Driver.Session
 
-import GHC.Core.Opt.Arity  ( manifestArity )
 import GHC.Core
 import GHC.Core.Unfold.Make
 import GHC.Core.Utils  ( exprType, exprIsHNF )
@@ -552,7 +551,7 @@ tryWW ww_opts is_rec fn_id rhs
   | isRecordSelector fn_id
   = return [ (new_fn_id, rhs ) ]
 
-  | is_fun && is_eta_exp
+  | is_fun
   = splitFun ww_opts new_fn_id rhs
 
   -- See Note [Thunk splitting]
@@ -576,8 +575,6 @@ tryWW ww_opts is_rec fn_id rhs
       | otherwise   = id
         -- See Note [Don't w/w join points for CPR]
 
-    -- is_eta_exp: see Note [Don't eta expand in w/w]
-    is_eta_exp = length wrap_dmds == manifestArity rhs
     is_fun     = notNull wrap_dmds || isJoinId fn_id
     is_thunk   = not is_fun && not (exprIsHNF rhs) && not (isJoinId fn_id)
                             && not (isUnliftedType (idType fn_id))
@@ -722,6 +719,11 @@ by LitRubbish (see Note [Drop absent bindings]) so there is no great harm.
 ---------------------
 splitFun :: WwOpts -> Id -> CoreExpr -> UniqSM [(Id, CoreExpr)]
 splitFun ww_opts fn_id rhs
+  | not (wrap_dmds `lengthIs` count isId arg_vars)
+    -- See Note [Don't eta expand in w/w]
+  = return [(fn_id, rhs)]
+
+  | otherwise
   = warnPprTrace (not (wrap_dmds `lengthIs` (arityInfo fn_info)))
                  (ppr fn_id <+> (ppr wrap_dmds $$ ppr cpr)) $
     do { mb_stuff <- mkWwBodies ww_opts fn_id arg_vars (exprType body) wrap_dmds cpr
@@ -914,33 +916,46 @@ property).
       in body
 
 splitThunk transforms like this:
-
       let
-        x* = case x-rhs of { I# a -> I# a }
+        x* = let x = x-rhs in
+             case x of { I# a -> I# a }
       in body
 
-Now simplifier will transform to
-
+This is a little strange: we are re-using the same `x` in the RHS; and
+the RHS takes `x` apart and reboxes it. But because the outer 'let' is
+strict, and the inner let mentions `x` only once, the simplifier
+transform it to
       case x-rhs of
         I# a -> let x* = I# a
                 in body
 
-which is what we want. Now suppose x-rhs is itself a case:
+That is good: in `body` we know the form of `x2`, which
+  * gives the CPR property, and
+  * allows case-of-case to happen on x
 
-        x-rhs = case e of { T -> I# a; F -> I# b }
+Notes
+* I tried transforming like this:
+      let
+        x* = let x = x-rhs in
+             case x of { I# a -> x }
+      in body
+  where I return `x` itself, rather than reboxing it.  But this
+  turne dout
 
-The join point will abstract over a, rather than over (which is
-what would have happened before) which is fine.
+* Suppose x-rhs is itself a case:
+        x-rhs = case e of { T -> I# e1; F -> I# e2 }
 
-Notice that x certainly has the CPR property now!
+  The join point will abstract over a, rather than over x (which is
+  what would have happened if we simplify
+    let x* = case e of ... in body
 
-In fact, splitThunk uses the function argument w/w splitting
-function, so that if x's demand is deeper (say U(U(L,L),L))
-then the splitting will go deeper too.
+* In fact, splitThunk uses the function argument w/w splitting
+  function, mkWWstr_one, so that if x's demand is deeper (say U(U(L,L),L))
+  then the splitting will go deeper too.
 
-NB: For recursive thunks, the Simplifier is unable to float `x-rhs` out of
-`x*`'s RHS, because `x*` occurs freely in `x-rhs`, and will just change it
-back to the original definition, so we just split non-recursive thunks.
+* For recursive thunks, the Simplifier is unable to float `x-rhs` out of
+  `x*`'s RHS, because `x*` occurs freely in `x-rhs`, and will just change it
+  back to the original definition, so we just split non-recursive thunks.
 
 Note [Thunk splitting for top-level binders]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
