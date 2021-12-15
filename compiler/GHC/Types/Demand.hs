@@ -1503,11 +1503,13 @@ data DmdType
 
 instance Eq DmdType where
   (==) (DmdType fv1 ds1 div1)
-       (DmdType fv2 ds2 div2) = nonDetUFMToList fv1 == nonDetUFMToList fv2
-         -- It's OK to use nonDetUFMToList here because we're testing for
-         -- equality and even though the lists will be in some arbitrary
-         -- Unique order, it is the same order for both
-                              && ds1 == ds2 && div1 == div2
+       (DmdType fv2 ds2 div2) =  div1 == div2 && ds1 == ds2 -- cheap checks first
+                              && as_list div1 fv1 == as_list div2 fv2
+       where
+         as_list div = filter (\(_, dmd) -> dmd /= defaultFvDmd div) . nonDetUFMToList
+           -- It's OK to use nonDetUFMToList here because we're testing for
+           -- equality and even though the lists will be in some arbitrary
+           -- Unique order, it is the same order for both
 
 -- | Compute the least upper bound of two 'DmdType's elicited /by the same
 -- incoming demand/!
