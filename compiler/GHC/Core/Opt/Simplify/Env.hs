@@ -56,7 +56,7 @@ import GHC.Types.Var.Env
 import GHC.Types.Var.Set
 import GHC.Data.OrdList
 import GHC.Types.Id as Id
-import GHC.Core.Make            ( mkWildValBinder )
+import GHC.Core.Make            ( mkWildValBinder, mkCoreLet )
 import GHC.Driver.Session       ( DynFlags )
 import GHC.Builtin.Types
 import GHC.Core.TyCo.Rep        ( TyCoBinder(..) )
@@ -429,7 +429,7 @@ Note [LetFloats]
 ~~~~~~~~~~~~~~~~
 The LetFloats is a bunch of bindings, classified by a FloatFlag.
 
-* All of them satisfy the let/app invariant
+* All of them satisfy the let-can-float invariant
 
 Examples
 
@@ -442,8 +442,8 @@ Examples
   NonRec x* (f y)       FltCareful  -- Strict binding; might fail or diverge
 
 Can't happen:
-  NonRec x# (a /# b)    -- Might fail; does not satisfy let/app
-  NonRec x# (f y)       -- Might diverge; does not satisfy let/app
+  NonRec x# (a /# b)    -- Might fail; does not satisfy let-can-float invariant
+  NonRec x# (f y)       -- Might diverge; does not satisfy let-can-float invariant
 -}
 
 data LetFloats = LetFloats (OrdList OutBind) FloatFlag
@@ -513,7 +513,7 @@ emptyLetFloats = LetFloats nilOL FltLifted
 emptyJoinFloats :: JoinFloats
 emptyJoinFloats = nilOL
 
-unitLetFloat :: OutBind -> LetFloats
+unitLetFloat :: HasDebugCallStack => OutBind -> LetFloats
 -- This key function constructs a singleton float with the right form
 unitLetFloat bind = assert (all (not . isJoinId) (bindersOf bind)) $
                     LetFloats (unitOL bind) (flag bind)
@@ -633,10 +633,10 @@ mkRecFloats floats@(SimplFloats { sfLetFloats  = LetFloats bs _ff
 
 wrapFloats :: SimplFloats -> OutExpr -> OutExpr
 -- Wrap the floats around the expression; they should all
--- satisfy the let/app invariant, so mkLets should do the job just fine
+-- satisfy the let-can-float invariant, so mkLets should do the job just fine
 wrapFloats (SimplFloats { sfLetFloats  = LetFloats bs _
                         , sfJoinFloats = jbs }) body
-  = foldrOL Let (wrapJoinFloats jbs body) bs
+  = foldrOL mkCoreLet (wrapJoinFloats jbs body) bs
      -- Note: Always safe to put the joins on the inside
      -- since the values can't refer to them
 

@@ -27,7 +27,7 @@ import GHC.Core.Utils
 import GHC.Core.FVs
 import GHC.Core.Unfold
 import GHC.Core.Unfold.Make
-import GHC.Core.Make ( FloatBind(..) )
+import GHC.Core.Make ( FloatBind(..), mkWildValBinder )
 import GHC.Core.Opt.OccurAnal( occurAnalyseExpr, occurAnalysePgm )
 import GHC.Types.Literal
 import GHC.Types.Id
@@ -343,8 +343,18 @@ simple_app env e@(Lam {}) as@(_:_)
   = do_beta env zapped_bndrs body as
   where
     do_beta env (b:bs) body (a:as)
+      | (env', b') <- subst_opt_bndr env b
+        -- simpl binder before looking at its type
+        -- See Note [Dark corner with representation polymorphism]
+      , needsCaseBinding (idType b') (snd a)
+        -- This arg must not be inlined (side-effects) and cannot be let-bound,
+        -- due to the let-can-float invariant. So simply case-bind it here.
+      , let a' = simple_opt_clo env a
+      = mkDefaultCase a' b' $ do_beta env' bs body as
+
       | (env', mb_pr) <- simple_bind_pair env b Nothing a NotTopLevel
       = wrapLet mb_pr $ do_beta env' bs body as
+
     do_beta env bs body as = simple_app env (mkLams bs body) as
 
 simple_app env (Tick t e) as
@@ -1121,6 +1131,19 @@ exprIsConApp_maybe (in_scope, id_unf) expr
            MRefl    -> go subst floats expr (CC args' co2)
 
     go subst floats (App fun arg) (CC args co)
+       | let arg_type = exprType arg
+       , not (isTypeArg arg) && needsCaseBinding arg_type arg
+       -- An unlifted argument that’s not ok for speculation must not simply be
+       -- put into the args, as these are going to be substituted into the case
+       -- alternatives, and possibly lost on the way. Instead, we need need to
+       -- make sure they are evaluated right here (using a case float), and
+       -- the case binder can then be substituted into the case alternaties.
+       = let arg' = subst_expr subst arg
+             bndr = uniqAway (subst_in_scope subst) (mkWildValBinder Many arg_type)
+             float = FloatCaseDefault arg' bndr
+             subst' = subst_extend_in_scope subst bndr
+         in go subst' (float:floats) fun (CC (Var bndr : args) co)
+       | otherwise
        = go subst floats fun (CC (subst_expr subst arg : args) co)
 
     go subst floats (Lam bndr body) (CC (arg:args) co)
@@ -1219,6 +1242,13 @@ exprIsConApp_maybe (in_scope, id_unf) expr
     ----------------------------
     -- Operations on the (Either InScopeSet GHC.Core.Subst)
     -- The Left case is wildly dominant
+
+    subst_in_scope (Left in_scope) = in_scope
+    subst_in_scope (Right s) = substInScope s
+
+    subst_extend_in_scope (Left in_scope) v = Left (in_scope `extendInScopeSet` v)
+    subst_extend_in_scope (Right s) v = Right (s `extendInScope` v)
+
     subst_co (Left {}) co = co
     subst_co (Right s) co = GHC.Core.Subst.substCo s co
 

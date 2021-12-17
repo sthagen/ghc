@@ -343,15 +343,16 @@ dmdTransformThunkDmd e
 -- See ↦* relation in the Cardinality Analysis paper
 dmdAnalStar :: AnalEnv
             -> Demand   -- This one takes a *Demand*
-            -> CoreExpr -- Should obey the let/app invariant
+            -> CoreExpr
             -> (PlusDmdArg, CoreExpr)
 dmdAnalStar env (n :* sd) e
   -- NB: (:*) expands AbsDmd and BotDmd as needed
   -- See Note [Analysing with absent demand]
   | WithDmdType dmd_ty e' <- dmdAnal env sd e
-  = assertPpr (not (isUnliftedType (exprType e)) || exprOkForSpeculation e) (ppr e)
-    -- The argument 'e' should satisfy the let/app invariant
-    (toPlusDmdArg $ multDmdType n dmd_ty, e')
+  = let -- unlifted arguments are kinda strict:
+        n' | mightBeUnliftedType (exprType e') = C_10 `plusCard` n
+           | otherwise = n
+    in (toPlusDmdArg $ multDmdType n' dmd_ty, e')
 
 -- Main Demand Analsysis machinery
 dmdAnal, dmdAnal' :: AnalEnv
@@ -624,11 +625,12 @@ There are several wrinkles:
   usage of 'y', else 'g' will say 'y' is absent, and will w/w so that
   'y' is bound to an aBSENT_ERROR thunk.
 
-  However, the argument of toSubDmd always satisfies the let/app
-  invariant; so if it is unlifted it is also okForSpeculation, and so
-  can be evaluated in a short finite time -- and that rules out nasty
-  cases like the one above.  (I'm not quite sure why this was a
-  problem in an earlier version of GHC, but it isn't now.)
+  However, the argument of toSubDmd always satisfies the let-can-float
+  invariant so if it is unlifted it is also okForSpeculation, and so can be
+  evaluated in a short finite time -- and that rules out nasty cases like the
+  one above.  (I'm not quite sure why this was a problem in an earlier version
+  of GHC, but it isn't now.)
+  TODO: Is this still true?
 
 Note [Always analyse in virgin pass]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -6,6 +6,7 @@
 
 
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE MultiWayIf #-}
 
 {-# OPTIONS_GHC -Wno-incomplete-record-updates -Wno-incomplete-uni-patterns #-}
 module GHC.Core.Opt.Simplify ( simplTopBinds, simplExpr, simplRules ) where
@@ -71,6 +72,7 @@ import GHC.Utils.Constants (debugIsOn)
 import GHC.Utils.Trace
 import GHC.Utils.Monad  ( mapAccumLM, liftIO )
 import GHC.Utils.Logger
+import GHC.Utils.Misc
 
 import Control.Monad
 
@@ -324,7 +326,7 @@ simplLazyBind :: SimplEnv
               -> InExpr -> SimplEnv     -- The RHS and its environment
               -> SimplM (SimplFloats, SimplEnv)
 -- Precondition: not a JoinId
--- Precondition: rhs obeys the let/app invariant
+-- Precondition: rhs obeys the let-can-float invariant
 -- NOT used for JoinIds
 simplLazyBind env top_lvl is_rec bndr bndr1 rhs rhs_se
   = assert (isId bndr )
@@ -412,7 +414,7 @@ simplNonRecX :: SimplEnv
 -- A specialised variant of simplNonRec used when the RHS is already
 -- simplified, notably in knownCon.  It uses case-binding where necessary.
 --
--- Precondition: rhs satisfies the let/app invariant
+-- Precondition: rhs satisfies the let-can-float invariant
 
 simplNonRecX env bndr new_rhs
   | assertPpr (not (isJoinId bndr)) (ppr bndr) $
@@ -445,8 +447,8 @@ completeNonRecX :: TopLevelFlag -> SimplEnv
                 -> OutId                -- New binder
                 -> OutExpr              -- Simplified RHS
                 -> SimplM (SimplFloats, SimplEnv)    -- The new binding is in the floats
--- Precondition: rhs satisfies the let/app invariant
---               See Note [Core let/app invariant] in GHC.Core
+-- Precondition: rhs satisfies the let-can-float invariant
+--               See Note [Core let-can-float invariant] in GHC.Core
 
 completeNonRecX top_lvl env is_strict old_bndr new_bndr new_rhs
   = assertPpr (not (isJoinId new_bndr)) (ppr new_bndr) $
@@ -711,7 +713,8 @@ Here we want to make e1,e2 trivial and get
 That's what the 'go' loop in prepareRhs does
 -}
 
-prepareRhs :: SimplEnv -> TopLevelFlag
+prepareRhs :: HasDebugCallStack
+           => SimplEnv -> TopLevelFlag
            -> FastString    -- Base for any new variables
            -> OutExpr
            -> SimplM (LetFloats, OutExpr)
@@ -734,10 +737,12 @@ prepareRhs env top_lvl occ rhs0
              ; return (is_exp, floats, App rhs' (Type ty)) }
     go n_val_args (App fun arg)
         = do { (is_exp, floats1, fun') <- go (n_val_args+1) fun
-             ; case is_exp of
-                False -> return (False, emptyLetFloats, App fun arg)
-                True  -> do { (floats2, arg') <- makeTrivial env top_lvl topDmd occ arg
-                            ; return (True, floats1 `addLetFlts` floats2, App fun' arg') } }
+             ; let arg_ty = exprType arg
+             ; if is_exp && not (needsCaseBinding arg_ty arg)
+               then do { (floats2, arg') <- makeTrivial env top_lvl topDmd occ arg arg_ty
+                       ; return (True, floats1 `addLetFlts` floats2, App fun' arg') }
+               else return (False, emptyLetFloats, App fun arg)
+             }
     go n_val_args (Var fun)
         = return (is_exp, emptyLetFloats, Var fun)
         where
@@ -765,27 +770,28 @@ prepareRhs env top_lvl occ rhs0
     go _ other
         = return (False, emptyLetFloats, other)
 
-makeTrivialArg :: SimplEnv -> ArgSpec -> SimplM (LetFloats, ArgSpec)
+makeTrivialArg :: HasDebugCallStack => SimplEnv -> ArgSpec -> SimplM (LetFloats, ArgSpec)
 makeTrivialArg env arg@(ValArg { as_arg = e, as_dmd = dmd })
-  = do { (floats, e') <- makeTrivial env NotTopLevel dmd (fsLit "arg") e
+  = do { (floats, e') <- makeTrivial env NotTopLevel dmd (fsLit "arg") e (exprType e)
        ; return (floats, arg { as_arg = e' }) }
 makeTrivialArg _ arg
   = return (emptyLetFloats, arg)  -- CastBy, TyArg
 
-makeTrivial :: SimplEnv -> TopLevelFlag -> Demand
+makeTrivial :: HasDebugCallStack
+            => SimplEnv -> TopLevelFlag -> Demand
             -> FastString  -- ^ A "friendly name" to build the new binder from
-            -> OutExpr     -- ^ This expression satisfies the let/app invariant
+            -> OutExpr -> OutType -- ^ This expression satisfies the let-can-float invariant
             -> SimplM (LetFloats, OutExpr)
 -- Binds the expression to a variable, if it's not trivial, returning the variable
 -- For the Demand argument, see Note [Keeping demand info in StrictArg Plan A]
-makeTrivial env top_lvl dmd occ_fs expr
+makeTrivial env top_lvl dmd occ_fs expr expr_ty
   | exprIsTrivial expr                          -- Already trivial
   || not (bindingOk top_lvl expr expr_ty)       -- Cannot trivialise
                                                 --   See Note [Cannot trivialise]
   = return (emptyLetFloats, expr)
 
   | Cast expr' co <- expr
-  = do { (floats, triv_expr) <- makeTrivial env top_lvl dmd occ_fs expr'
+  = do { (floats, triv_expr) <- makeTrivial env top_lvl dmd occ_fs expr' (exprType expr')
        ; return (floats, Cast triv_expr co) }
 
   | otherwise
@@ -794,12 +800,12 @@ makeTrivial env top_lvl dmd occ_fs expr
        ; return (floats, Var new_id) }
   where
     id_info = vanillaIdInfo `setDemandInfo` dmd
-    expr_ty = exprType expr
 
-makeTrivialBinding :: SimplEnv -> TopLevelFlag
+makeTrivialBinding :: HasDebugCallStack
+                   => SimplEnv -> TopLevelFlag
                    -> FastString  -- ^ a "friendly name" to build the new binder from
                    -> IdInfo
-                   -> OutExpr     -- ^ This expression satisfies the let/app invariant
+                   -> OutExpr     -- ^ This expression satisfies the let-can-float invariant
                    -> OutType     -- Type of the expression
                    -> SimplM (LetFloats, OutId)
 makeTrivialBinding env top_lvl occ_fs info expr expr_ty
@@ -894,7 +900,7 @@ completeBind :: SimplEnv
 --      * or by adding to the floats in the envt
 --
 -- Binder /can/ be a JoinId
--- Precondition: rhs obeys the let/app invariant
+-- Precondition: rhs obeys the let-can-float invariant
 completeBind env top_lvl mb_cont old_bndr new_bndr new_rhs
  | isCoVar old_bndr
  = case new_rhs of
@@ -1449,13 +1455,10 @@ rebuild env expr cont
 
       StrictArg { sc_fun = fun, sc_cont = cont, sc_fun_ty = fun_ty }
         -> rebuildCall env (addValArgTo fun expr fun_ty ) cont
+
       StrictBind { sc_bndr = b, sc_bndrs = bs, sc_body = body
                  , sc_env = se, sc_cont = cont }
-        -> do { (floats1, env') <- simplNonRecX (se `setInScopeFromE` env) b expr
-                                  -- expr satisfies let/app since it started life
-                                  -- in a call to simplNonRecE
-              ; (floats2, expr') <- simplLam env' bs body cont
-              ; return (floats1 `addFloats` floats2, expr') }
+        -> completeStrictBind (se `setInScopeFromE` env) b expr bs body cont -- TODO: env or se?
 
       ApplyToTy  { sc_arg_ty = ty, sc_cont = cont}
         -> rebuild env (App expr (Type ty)) cont
@@ -1464,6 +1467,26 @@ rebuild env expr cont
         -- See Note [Avoid redundant simplification]
         -> do { (_, _, arg') <- simplArg env dup_flag se arg
               ; rebuild env (App expr arg') cont }
+
+completeStrictBind :: SimplEnv
+                   -> InId -> OutExpr   -- Bind this Id to this (simplified) expression
+                   -> [InId] -> InExpr  -- In this lambda
+                   -> SimplCont         -- Consumed by this continuation
+                   -> SimplM (SimplFloats, OutExpr)
+completeStrictBind env bndr rhs bndrs body cont
+  | needsCaseBinding (idType bndr) rhs -- Enforcing the let-can-float-invariant
+  = do { (env1, bndr1) <- simplNonRecBndr env bndr
+       ; (floats, expr') <- simplLam env1 bndrs body cont
+       -- Do not float floats past the Case binder below
+       ; let expr'' = wrapFloats floats expr'
+       ; let case_expr = Case rhs bndr1 (contResultType cont) [Alt DEFAULT [] expr'']
+       ; return (emptyFloats env, case_expr) }
+
+  | otherwise
+  = do  { (floats1, env') <- simplNonRecX env bndr rhs
+        ; (floats2, expr') <- simplLam env' bndrs body cont
+        ; return (floats1 `addFloats` floats2, expr') }
+
 
 {-
 ************************************************************************
@@ -1612,12 +1635,10 @@ simplLam env (bndr:bndrs) body (ApplyToVal { sc_arg = arg, sc_env = arg_se
                                            , sc_cont = cont, sc_dup = dup })
   | isSimplified dup  -- Don't re-simplify if we've simplified it once
                       -- See Note [Avoiding exponential behaviour]
-  = do  { tick (BetaReduction bndr)
-        ; (floats1, env') <- simplNonRecX env bndr arg
-        ; (floats2, expr') <- simplLam env' bndrs body cont
-        ; return (floats1 `addFloats` floats2, expr') }
+  =  do { tick (BetaReduction bndr)
+        ; completeStrictBind env bndr arg bndrs body cont }
 
-  | otherwise
+  | otherwise         -- See Note [Avoiding exponential behaviour]
   = do  { tick (BetaReduction bndr)
         ; simplNonRecE env bndr (arg, arg_se) (bndrs, body) cont }
 
@@ -1666,10 +1687,9 @@ simplNonRecE :: SimplEnv
 --     cont< let b = rhs_se(rhs) in \bs.body >
 --
 -- It deals with strict bindings, via the StrictBind continuation,
--- which may abort the whole process
+-- which may abort the whole process.
 --
--- Precondition: rhs satisfies the let/app invariant
---               Note [Core let/app invariant] in GHC.Core
+-- The RHS may not satisfy the let-can-float invariant yet
 --
 -- The "body" of the binding comes as a pair of ([InId],InExpr)
 -- representing a lambda; so we recurse back to simplLam
@@ -1677,28 +1697,29 @@ simplNonRecE :: SimplEnv
 --       the call to simplLam in simplExprF (Lam ...)
 
 simplNonRecE env bndr (rhs, rhs_se) (bndrs, body) cont
-  | assert (isId bndr && not (isJoinId bndr) ) True
-  , Just env' <- preInlineUnconditionally env NotTopLevel bndr rhs rhs_se
-  = do { tick (PreInlineUnconditionally bndr)
-       ; -- pprTrace "preInlineUncond" (ppr bndr <+> ppr rhs) $
-         simplLam env' bndrs body cont }
+  = assert (isId bndr && not (isJoinId bndr) ) $
+    do { (env1, bndr1) <- simplNonRecBndr env bndr
+       ; if | not (needsCaseBinding (idType bndr1) rhs)
+            , Just env' <- preInlineUnconditionally env NotTopLevel bndr rhs rhs_se ->
+            do { tick (PreInlineUnconditionally bndr)
+               ; -- pprTrace "preInlineUncond" (ppr bndr <+> ppr rhs) $
+                 simplLam env' bndrs body cont }
 
-  | otherwise
-  = do { (env1, bndr1) <- simplNonRecBndr env bndr
 
-       -- Deal with strict bindings
-       -- See Note [Dark corner with representation polymorphism]
-       ; if isStrictId bndr1 && sm_case_case (getMode env)
-         then simplExprF (rhs_se `setInScopeFromE` env) rhs
-                   (StrictBind { sc_bndr = bndr, sc_bndrs = bndrs, sc_body = body
-                               , sc_env = env, sc_cont = cont, sc_dup = NoDup })
+             -- Deal with strict bindings
+             -- See Note [Dark corner with representation polymorphism]
+            | isStrictId bndr1 && sm_case_case (getMode env)
+            || needsCaseBinding (idType bndr1) rhs ->
+            simplExprF (rhs_se `setInScopeFromE` env) rhs
+                       (StrictBind { sc_bndr = bndr, sc_bndrs = bndrs, sc_body = body
+                                   , sc_env = env, sc_cont = cont, sc_dup = NoDup })
 
-       -- Deal with lazy bindings
-         else do
-       { (env2, bndr2) <- addBndrRules env1 bndr bndr1 Nothing
-       ; (floats1, env3) <- simplLazyBind env2 NotTopLevel NonRecursive bndr bndr2 rhs rhs_se
-       ; (floats2, expr') <- simplLam env3 bndrs body cont
-       ; return (floats1 `addFloats` floats2, expr') } }
+            -- Deal with lazy bindings
+            | otherwise ->
+            do { (env2, bndr2) <- addBndrRules env1 bndr bndr1 Nothing
+               ; (floats1, env3) <- simplLazyBind env2 NotTopLevel NonRecursive bndr bndr2 rhs rhs_se
+               ; (floats2, expr') <- simplLam env3 bndrs body cont
+               ; return (floats1 `addFloats` floats2, expr') } }
 
 ------------------
 simplRecE :: SimplEnv
@@ -1721,8 +1742,8 @@ simplRecE env pairs body cont
 
 {- Note [Dark corner with representation polymorphism]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-In `simplNonRecE`, the call to `isStrictId` will fail if the binder
-does not have a fixed runtime representation, e.g. if it is of kind (TYPE r).
+In `simplNonRecE`, the call to `needsCaseBinding` or to `isStrictId` will fail
+if the binder does not have a fixed runtime representation, e.g. if it is of kind (TYPE r).
 So we are careful to call `isStrictId` on the OutId, not the InId, in case we have
      ((\(r::RuntimeRep) \(x::TYPE r). blah) Lifted arg)
 That will lead to `simplNonRecE env (x::TYPE r) arg`, and we can't tell
@@ -2542,7 +2563,7 @@ this transformation:
 We treat the unlifted and lifted cases separately:
 
 * Unlifted case: 'e' satisfies exprOkForSpeculation
-  (ok-for-spec is needed to satisfy the let/app invariant).
+  (ok-for-spec is needed to satisfy the let-can-float invariant).
   This turns     case a +# b of r -> ...r...
   into           let r = a +# b in ...r...
   and thence     .....(a +# b)....
@@ -2754,7 +2775,7 @@ rebuildCase env scrut case_bndr alts cont
       assert (null bs) $
       do { (floats1, env') <- simplNonRecX env case_bndr case_bndr_rhs
              -- scrut is a constructor application,
-             -- hence satisfies let/app invariant
+             -- hence satisfies let-can-float invariant
          ; (floats2, expr') <- simplExprF env' rhs cont
          ; case wfloats of
              [] -> return (floats1 `addFloats` floats2, expr')
@@ -3190,11 +3211,11 @@ We pin on a (OtherCon []) unfolding to the case-binder of a Case,
 even though it'll be over-ridden in every case alternative with a more
 informative unfolding.  Why?  Because suppose a later, less clever, pass
 simply replaces all occurrences of the case binder with the binder itself;
-then Lint may complain about the let/app invariant.  Example
+then Lint may complain about the let-can-float invariant.  Example
     case e of b { DEFAULT -> let v = reallyUnsafePtrEquality# b y in ....
                 ; K       -> blah }
 
-The let/app invariant requires that y is evaluated in the call to
+The let-can-float invariant requires that y is evaluated in the call to
 reallyUnsafePtrEquality#, which it is.  But we still want that to be true if we
 propagate binders to occurrences.
 
@@ -3299,7 +3320,7 @@ knownCon env scrut dc_floats dc dc_ty_args dc_args bndr bs rhs cont
              -- it via postInlineUnconditionally.
              -- Nevertheless we must keep it if the case-binder is alive,
              -- because it may be used in the con_app.  See Note [knownCon occ info]
-           ; (floats1, env2) <- simplNonRecX env' b' arg  -- arg satisfies let/app invariant
+           ; (floats1, env2) <- simplNonRecX env' b' arg  -- arg satisfies let-can-float invariant
            ; (floats2, env3)  <- bind_args env2 bs' args
            ; return (floats1 `addFloats` floats2, env3) }
 
@@ -3505,7 +3526,7 @@ mkDupableContWithDmds env dmds
         ; (floats1, cont') <- mkDupableContWithDmds env dmds cont
         ; let env' = env `setInScopeFromF` floats1
         ; (_, se', arg') <- simplArg env' dup se arg
-        ; (let_floats2, arg'') <- makeTrivial env NotTopLevel dmd (fsLit "karg") arg'
+        ; (let_floats2, arg'') <- makeTrivial env NotTopLevel dmd (fsLit "karg") arg' (exprType arg')
         ; let all_floats = floats1 `addLetFloats` let_floats2
         ; return ( all_floats
                  , ApplyToVal { sc_arg = arg''

@@ -746,8 +746,9 @@ wrapTick t (FB tops ceils defns)
     wrap_bind (NonRec binder rhs) = NonRec binder (maybe_tick rhs)
     wrap_bind (Rec pairs)         = Rec (mapSnd maybe_tick pairs)
 
-    wrap_one (FloatLet bind)      = FloatLet (wrap_bind bind)
-    wrap_one (FloatCase e b c bs) = FloatCase (maybe_tick e) b c bs
+    wrap_one (FloatLet bind)        = FloatLet (wrap_bind bind)
+    wrap_one (FloatCase e b c bs)   = FloatCase (maybe_tick e) b c bs
+    wrap_one (FloatCaseDefault e b) = FloatCaseDefault (maybe_tick e) b
 
     maybe_tick e | exprIsHNF e = tickHNFArgs t e
                  | otherwise   = mkTick t e

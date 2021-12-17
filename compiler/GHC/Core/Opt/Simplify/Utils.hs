@@ -1250,8 +1250,8 @@ preInlineUnconditionally
     :: SimplEnv -> TopLevelFlag -> InId
     -> InExpr -> StaticEnv  -- These two go together
     -> Maybe SimplEnv       -- Returned env has extended substitution
--- Precondition: rhs satisfies the let/app invariant
--- See Note [Core let/app invariant] in GHC.Core
+-- Precondition: rhs satisfies the let-can-float invariant
+-- See Note [Core let-can-float invariant] in GHC.Core
 -- Reason: we don't want to inline single uses, or discard dead bindings,
 --         for unlifted, side-effect-ful bindings
 preInlineUnconditionally env top_lvl bndr rhs rhs_env
@@ -1376,8 +1376,8 @@ postInlineUnconditionally
     -> OccInfo          -- From the InId
     -> OutExpr
     -> Bool
--- Precondition: rhs satisfies the let/app invariant
--- See Note [Core let/app invariant] in GHC.Core
+-- Precondition: rhs satisfies the let-can-float invariant
+-- See Note [Core let-can-float invariant] in GHC.Core
 -- Reason: we don't want to inline single uses, or discard dead bindings,
 --         for unlifted, side-effect-ful bindings
 postInlineUnconditionally env top_lvl bndr occ_info rhs

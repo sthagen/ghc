@@ -56,7 +56,7 @@ h :: Int -> Int
 h = \ (m :: Int) ->
       case m of wild { GHC.Types.I# ds ->
       let {
-        $wg [InlPrag=NOINLINE, Dmd=MCM(!P(M!L,1!L))]
+        $wg [InlPrag=NOINLINE, Dmd=MCM(!P(M!P(L!L),1!L))]
           :: GHC.Prim.Int# -> (# Int, Int #)
         [LclId, Arity=1, Str=<1L>, Unf=OtherCon []]
         $wg
@@ -67,12 +67,13 @@ h = \ (m :: Int) ->
                      case ds1 of wild1 {
                        __DEFAULT ->
                          let {
-                           c1# :: GHC.Prim.Int#
+                           c1# [Dmd=SL] :: GHC.Prim.Int#
                            [LclId]
                            c1# = GHC.Prim.andI# 1# (GHC.Prim.<# wild1 0#) } in
-                         case GHC.Prim.quotInt# (GHC.Prim.-# 2# c1#) wild1 of wild2
+                         case GHC.Prim.-# (GHC.Prim.quotInt# (GHC.Prim.-# 2# c1#) wild1) c1#
+                         of ds2
                          { __DEFAULT ->
-                         GHC.Types.I# (GHC.Prim.-# wild2 c1#)
+                         GHC.Types.I# ds2
                          };
                        0# -> GHC.Real.divZeroError @Int
                      } #);
