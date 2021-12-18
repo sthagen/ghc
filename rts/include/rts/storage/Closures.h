@@ -60,6 +60,7 @@ typedef struct {
     // start of the info table. See
     // https://gitlab.haskell.org/ghc/ghc/-/wikis/commentary/rts/storage/heap-objects#tables_next_to_code.
     const StgInfoTable* info;
+
 #if defined(PROFILING)
     StgProfHeader         prof;
 #endif
@@ -78,62 +79,91 @@ typedef struct {
 /* -----------------------------------------------------------------------------
    Closure Types
 
-   For any given closure type (defined in InfoTables.h), there is a
-   corresponding structure defined below.  The name of the structure
-   is obtained by concatenating the closure type with '_closure'
+   For any given closure type (defined in ClosureTypes.h), there is a
+   corresponding structure defined below.
    -------------------------------------------------------------------------- */
 
-/* All closures follow the generic format */
 
+// Generic closure layout, all closures follow this format with a header field
+// and some payload
 typedef struct StgClosure_ {
     StgHeader   header;
     struct StgClosure_ *payload[];
 } *StgClosurePtr; // StgClosure defined in rts/Types.h
 
+
+// Thunk closure, an unevaluated value
+//
+// Closure types: THUNK, THUNK_<X>_<Y>
 typedef struct StgThunk_ {
     StgThunkHeader  header;
     struct StgClosure_ *payload[];
 } StgThunk;
 
+
+// A selector thunk, this represent an unevaluated applied record field
+// selector, ie `fst pair`. The field offset is stored in the header.
+//
+// Closure types: THUNK_SELECTOR
 typedef struct {
     StgThunkHeader   header;
     StgClosure *selectee;
 } StgSelector;
 
-/*
-   PAP payload contains pointers and non-pointers interleaved and we only have
-   one info table for PAPs (stg_PAP_info). To visit pointers in a PAP payload we
-   use the `fun`s bitmap. For a PAP with n_args arguments the first n_args bits
-   in the fun's bitmap tell us which payload locations contain pointers.
-*/
+
+// BUT WHAT DOES PAP MEAN?
+//
+// PAP payload contains pointers and non-pointers interleaved and we only have
+// one info table for PAPs (stg_PAP_info). To visit pointers in a PAP payload we
+// use the `fun`s bitmap. For a PAP with n_args arguments the first n_args bits
+// in the fun's bitmap tell us which payload locations contain pointers.
+//
+// Closure types: PAP
 typedef struct {
     StgHeader   header;
-    StgHalfWord arity;          /* zero if it is an AP */
+    StgHalfWord arity;          /* zero if it is an AP */ // ??
     StgHalfWord n_args;
-    StgClosure *fun;            /* really points to a fun */
+    StgClosure *fun;            /* really points to a fun */ // but what is a fun? function of some kind? but what kind?
     StgClosure *payload[];
 } StgPAP;
 
+
+// AP, ??
+//
+// Closure types: AP
 typedef struct {
     StgThunkHeader   header;
-    StgHalfWord arity;          /* zero if it is an AP */
+    StgHalfWord arity;          /* zero if it is an AP */ // when wouldn't this be an AP? is seems the whole purpose of this struct is to be an AP
     StgHalfWord n_args;
     StgClosure *fun;            /* really points to a fun */
     StgClosure *payload[];
 } StgAP;
 
+
+// AP_STACK, ??
+//
+// Closure types: AP_STACK
 typedef struct {
     StgThunkHeader   header;
-    StgWord     size;                    /* number of words in payload */
+    StgWord     size; /* number of words in payload */
     StgClosure *fun;
     StgClosure *payload[]; /* contains a chunk of *stack* */
 } StgAP_STACK;
 
+
+// Indirection to some other closure on the heap?
+//
+// Closure types: IND
 typedef struct {
     StgHeader   header;
     StgClosure *indirectee;
 } StgInd;
 
+
+// Static indirection, indirection to a statically allocated closure? or a the
+// statically allocated thing itself?
+//
+// Closure types: IND_STATIC
 typedef struct {
     StgHeader     header;
     StgClosure   *indirectee;
@@ -143,6 +173,10 @@ typedef struct {
         // see `newCAF` and Note [CAF lists] in rts/sm/Storage.h.
 } StgIndStatic;
 
+
+// A queue for blocking on things
+//
+// Closure types: BLOCKING_QUEUE
 typedef struct StgBlockingQueue_ {
     StgHeader   header;
     struct StgBlockingQueue_ *link;
@@ -154,12 +188,22 @@ typedef struct StgBlockingQueue_ {
         // holds TSOs blocked on `bh`
 } StgBlockingQueue;
 
+
+// An array of bytes, ie ByteArray# and MutableByteArray#
+//
+// Closure types: ARR_WORDS
 typedef struct {
     StgHeader  header;
-    StgWord    bytes;
+    StgWord    bytes; // number of bytes in payload
     StgWord    payload[];
 } StgArrBytes;
 
+
+// An array of heap objects, ie Array# v and MutableArray# v
+//
+// Closure types: MUT_ARR_PTRS_CLEAN, MUT_ARR_PTRS_DIRTY,
+// MUT_ARR_PTRS_FROZEN_DIRTY, MUT_ARR_PTRS_FROZEN_CLEAN, MUT_VAR_CLEAN,
+// MUT_VAR_DIRTY
 typedef struct {
     StgHeader   header;
     StgWord     ptrs;
@@ -168,69 +212,144 @@ typedef struct {
     // see also: StgMutArrPtrs macros in ClosureMacros.h
 } StgMutArrPtrs;
 
+
+// A small array of head objects, ie SmallArray# and MutableSmallArray#
+//
+// Closure types: SMALL_MUT_ARR_PTRS_CLEAN, SMALL_MUT_ARR_PTRS_DIRTY,
+// SMALL_MUT_ARR_PTRS_FROZEN_DIRTY, SMALL_MUT_ARR_PTRS_FROZEN_CLEAN,
 typedef struct {
     StgHeader   header;
     StgWord     ptrs;
     StgClosure *payload[];
 } StgSmallMutArrPtrs;
 
+
+// A mutable reference, ie MutVar#
+//
+// Closure types: MUT_VAR_CLEAN, MUT_VAR_DIRTY
 typedef struct {
     StgHeader   header;
     StgClosure *var;
 } StgMutVar;
 
+
+// Stack frames. StgStack is defined in TSO.h
+// ==========================================
+
+
+// Stack frame, ??
+//
+// Closure types: UPDATE_FRAME
 typedef struct _StgUpdateFrame {
     StgHeader  header;
     StgClosure *updatee;
 } StgUpdateFrame;
 
+
+// Stack frame, when we call catch one of these will be put on the stack so we
+// know to handle exceptions with the supplied handler
+//
+// Closure types: CATCH_FRAME
 typedef struct {
     StgHeader  header;
     StgWord    exceptions_blocked;
     StgClosure *handler;
 } StgCatchFrame;
 
+
+// Stack underflow frame, placed on the bottom of a stack chunk and links to
+// the next chunk
+//
+// Closure types: UNDERFLOW_FRAME
 typedef struct {
     const StgInfoTable* info;
     struct StgStack_ *next_chunk;
 } StgUnderflowFrame;
 
+
+// Stack end frame, placed on the bottom of a stack chunk signifying the very
+// bottom of the stack
+//
+// Closure types: STOP_FRAME
 typedef struct {
     StgHeader  header;
 } StgStopFrame;
 
+
+/* A function return stack frame: used when saving the state for a
+ * garbage collection at a function entry point.  The function
+ * arguments are on the stack, and we also save the function (its
+ * info table describes the pointerhood of the arguments).
+ *
+ * The stack frame size is also cached in the frame for convenience.
+ *
+ * The only RET_FUN is stg_gc_fun, which is created by __stg_gc_fun,
+ * both in HeapStackCheck.cmm.
+ */
+typedef struct {
+    const StgInfoTable* info;
+    StgWord        size;
+    StgClosure *   fun;
+    StgClosure *   payload[];
+} StgRetFun;
+
+
+// Int or charlike things, these are statically allocated in StgMiscClosures.h
+//
+// Closure type: CONSTR_0_1?
 typedef struct {
   StgHeader header;
   StgWord data;
 } StgIntCharlikeClosure;
 
+
+// Retry something?
 /* statically allocated */
 typedef struct {
   StgHeader  header;
 } StgRetry;
 
+
+// Stable name, a StableName# v
 typedef struct _StgStableName {
   StgHeader      header;
   StgWord        sn;
 } StgStableName;
 
-typedef struct _StgWeak {       /* Weak v */
+
+// A weak reference, a Weak#
+//
+// Closure types: WEAK
+typedef struct _StgWeak {
   StgHeader header;
   StgClosure *cfinalizers;
   StgClosure *key;
-  StgClosure *value;            /* v */
+  StgClosure *value; // the actual value
   StgClosure *finalizer;
   struct _StgWeak *link;
 } StgWeak;
 
+
+// Linked list of c function pointer finalisers for a weak reference
+//
+// Closure type: CONSTR
 typedef struct _StgCFinalizerList {
   StgHeader header;
-  StgClosure *link;
+  StgClosure *link; // the next finaliser
+
+  // function to call
+  //
+  // Actual type is `void (*)(void* ptr)` or `void (*)(void* eptr, void* ptr)`
+  // depending on the flag field.
   void (*fptr)(void);
-  void *ptr;
-  void *eptr;
-  StgWord flag; /* has environment (0 or 1) */
+
+  void *ptr; // pointer to what?
+  void *eptr; // pointer to environment
+
+  StgWord flag; // has environment, 0: no environment, 1: yes environment
+
 } StgCFinalizerList;
+
 
 /* Byte code objects.  These are fixed size objects with pointers to
  * four arrays, designed so that a BCO can be easily "re-linked" to
@@ -252,15 +371,14 @@ typedef struct _StgCFinalizerList {
  *     away from the current object, because of the order in
  *     which pointers are updated to point to their new locations.
  */
-
 typedef struct {
     StgHeader      header;
-    StgArrBytes   *instrs;      /* a pointer to an ArrWords */
-    StgArrBytes   *literals;    /* a pointer to an ArrWords */
-    StgMutArrPtrs *ptrs;        /* a pointer to a  MutArrPtrs */
-    StgHalfWord   arity;        /* arity of this BCO */
-    StgHalfWord   size;         /* size of this BCO (in words) */
-    StgWord       bitmap[];  /* an StgLargeBitmap */
+    StgArrBytes   *instrs; // the code?
+    StgArrBytes   *literals; // literals used by the instructions?
+    StgMutArrPtrs *ptrs; // arguments/free variables?
+    StgHalfWord   arity; // arity of this BCO 
+    StgHalfWord   size;  // size of the bitmap 
+    StgWord       bitmap[]; // an StgLargeBitmap
 } StgBCO;
 
 #define BCO_BITMAP(bco)      ((StgLargeBitmap *)((StgBCO *)(bco))->bitmap)
@@ -269,35 +387,30 @@ typedef struct {
 #define BCO_BITMAP_SIZEW(bco) ((BCO_BITMAP_SIZE(bco) + BITS_IN(StgWord) - 1) \
                                 / BITS_IN(StgWord))
 
-/* A function return stack frame: used when saving the state for a
- * garbage collection at a function entry point.  The function
- * arguments are on the stack, and we also save the function (its
- * info table describes the pointerhood of the arguments).
- *
- * The stack frame size is also cached in the frame for convenience.
- *
- * The only RET_FUN is stg_gc_fun, which is created by __stg_gc_fun,
- * both in HeapStackCheck.cmm.
- */
-typedef struct {
-    const StgInfoTable* info;
-    StgWord        size;
-    StgClosure *   fun;
-    StgClosure *   payload[];
-} StgRetFun;
 
 /* Concurrent communication objects */
 
+// Queue for threads waiting on an MVar
+//
+// Closure types: 
 typedef struct StgMVarTSOQueue_ {
     StgHeader                header;
     struct StgMVarTSOQueue_ *link;
     struct StgTSO_          *tso;
 } StgMVarTSOQueue;
 
+
+// An MVar#
+//
+// Closure types: MVAR_CLEAN, MVAR_DIRTY
 typedef struct {
     StgHeader                header;
+
+    // threads that are waiting on this MVar?
     struct StgMVarTSOQueue_ *head;
     struct StgMVarTSOQueue_ *tail;
+
+    // The value in the MVar if filled
     StgClosure*              value;
 } StgMVar;
 

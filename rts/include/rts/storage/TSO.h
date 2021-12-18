@@ -262,6 +262,7 @@ typedef struct StgStack_ {
      * See comment on "Invariants" below.
      */
     StgPtr     sp;
+
     StgWord    stack[];
 } StgStack;
 
