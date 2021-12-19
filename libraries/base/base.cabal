@@ -267,6 +267,7 @@ Library
         GHC.RTS.Flags
         GHC.ST
         GHC.Stack.CloneStack
+        GHC.Stack.CloneStack.Types
         GHC.StaticPtr
         GHC.STRef
         GHC.Show

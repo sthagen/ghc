@@ -3,12 +3,9 @@
 module GHC.Stack.CloneStack where
 
 import {-# SOURCE #-} GHC.IO (IO (..))
-import GHC.Show
+import GHC.Stack.CloneStack.Types
 
 data StackSnapshot
-
-data StackEntry
-instance Show StackEntry
 
 cloneMyStack :: IO StackSnapshot
 
