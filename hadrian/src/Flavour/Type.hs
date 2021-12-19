@@ -29,13 +29,13 @@ data Flavour = Flavour {
     -- | Build dynamic GHC programs.
     dynamicGhcPrograms :: Action Bool,
     -- | Enable GHCi debugger.
-    ghciWithDebugger :: Bool,
+    ghciWithDebugger :: Stage -> Bool,
     -- | Build profiled GHC.
-    ghcProfiled :: Bool,
+    ghcProfiled :: Stage -> Bool,
     -- | Build GHC with debugging assertions.
-    ghcDebugged :: Bool,
+    ghcDebugged :: Stage -> Bool,
     -- | Build the GHC executable against the threaded runtime system.
-    ghcThreaded :: Bool,
+    ghcThreaded :: Stage -> Bool,
     -- | Whether to build docs and which ones
     --   (haddocks, user manual, haddock manual)
     ghcDocs :: Action DocTargets }

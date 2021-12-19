@@ -7,6 +7,7 @@ import Oracles.Flag
 import Packages
 import Settings
 import Rules.Libffi
+import Oracles.Flavour
 
 -- | Package-specific command-line arguments.
 packageArgs :: Args
@@ -60,8 +61,7 @@ packageArgs = do
           , builder (Cabal Setup) ? mconcat
             [ arg "--disable-library-for-ghci"
             , anyTargetOs ["openbsd"] ? arg "--ld-options=-E"
-            , ghcProfiled <$> flavour ?
-              notStage0 ? arg "--ghc-pkg-option=--force" ]
+            , (getStage >>= expr . askGhcProfiled) ? arg "--ghc-pkg-option=--force" ]
 
           , builder (Cabal Flags) ? mconcat
             [ andM [expr ghcWithInterpreter, notStage0] `cabalFlag` "internal-interpreter"
@@ -84,7 +84,7 @@ packageArgs = do
 
                   -- We build a threaded stage N, N>1 if the configuration calls
                   -- for it.
-                  ((ghcThreaded <$> expr flavour) `cabalFlag` "threaded")
+                  ((ghcThreaded <$> expr flavour <*> getStage ) `cabalFlag` "threaded")
             ]
           ]
 

@@ -32,7 +32,7 @@ instance Show WayUnit where
 instance Read WayUnit where
     readsPrec _ s = [(unit, "") | unit <- [minBound ..], show unit == s]
 
--- | Collection of 'WayUnit's that stands for the different ways source codeA
+-- | Collection of 'WayUnit's that stands for the different ways source code
 -- is to be built.
 newtype Way = Way IntSet
   deriving newtype (Semigroup, Monoid)
