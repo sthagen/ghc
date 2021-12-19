@@ -1,3 +1,5 @@
+{-# language GeneralizedNewtypeDeriving #-}
+{-# language DerivingStrategies #-}
 module Way.Type where
 
 import Data.IntSet (IntSet)
@@ -30,9 +32,10 @@ instance Show WayUnit where
 instance Read WayUnit where
     readsPrec _ s = [(unit, "") | unit <- [minBound ..], show unit == s]
 
--- | Collection of 'WayUnit's that stands for the different ways source code
+-- | Collection of 'WayUnit's that stands for the different ways source codeA
 -- is to be built.
 newtype Way = Way IntSet
+  deriving newtype (Semigroup, Monoid)
 
 instance Binary Way where
     put = put . show
