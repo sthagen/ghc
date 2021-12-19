@@ -70,7 +70,9 @@ wayPrefix way | way == vanilla = ""
 
 waySuffix :: Way -> String
 waySuffix way | way == vanilla = ""
-              | otherwise      = "_" ++ show way
+              | otherwise      = "_" ++ show (if Debug `wayUnit` way
+                                          then Logging `removeWayUnit` way
+                                          else way)
 
 osuf, ssuf, hisuf, hcsuf, obootsuf, hibootsuf :: Way -> String
 osuf      = (++ "o"      ) . wayPrefix
