@@ -1674,8 +1674,10 @@ freeNamesIfCoercion (IfaceCoVarCo _)   = emptyNameSet
 freeNamesIfCoercion (IfaceHoleCo _)    = emptyNameSet
 freeNamesIfCoercion (IfaceAxiomInstCo ax _ cos)
   = unitNameSet ax &&& fnList freeNamesIfCoercion cos
+freeNamesIfCoercion (IfaceHydrateDCo _ t1 dco)
+  = freeNamesIfType t1 &&& freeNamesIfDCoercion dco
 freeNamesIfCoercion (IfaceUnivCo p _ t1 t2)
-  = freeNamesIfProv p &&& freeNamesIfType t1 &&& freeNamesIfType t2
+  = freeNamesIfProv freeNamesIfCoercion p &&& freeNamesIfType t1 &&& freeNamesIfType t2
 freeNamesIfCoercion (IfaceSymCo c)
   = freeNamesIfCoercion c
 freeNamesIfCoercion (IfaceTransCo c1 c2)
@@ -1696,30 +1698,30 @@ freeNamesIfCoercion (IfaceAxiomRuleCo _ax cos)
 
 freeNamesIfDCoercion :: IfaceDCoercion -> NameSet
 freeNamesIfDCoercion IfaceReflDCo          = emptyNameSet
-freeNamesIfDCoercion (IfaceGReflRightDCo co)
-  = freeNamesIfCoercion co
-freeNamesIfDCoercion (IfaceGReflLeftDCo co)
-  = freeNamesIfCoercion co
+freeNamesIfDCoercion (IfaceGReflRightDCo mco)
+  = freeNamesIfMCoercion mco
+freeNamesIfDCoercion (IfaceGReflLeftDCo mco)
+  = freeNamesIfMCoercion mco
 freeNamesIfDCoercion (IfaceTyConAppDCo cos)
   = fnList freeNamesIfDCoercion cos
 freeNamesIfDCoercion (IfaceAppDCo c1 c2)
   = freeNamesIfDCoercion c1 &&& freeNamesIfDCoercion c2
 freeNamesIfDCoercion (IfaceForAllDCo _ kind_co co)
-  = freeNamesIfCoercion kind_co &&& freeNamesIfDCoercion co
+  = freeNamesIfDCoercion kind_co &&& freeNamesIfDCoercion co
 freeNamesIfDCoercion (IfaceFreeCoVarDCo _)  = emptyNameSet
 freeNamesIfDCoercion (IfaceCoVarDCo _)      = emptyNameSet
 freeNamesIfDCoercion (IfaceAxiomInstDCo ax) = unitNameSet ax
 freeNamesIfDCoercion IfaceStepsDCo{}        = emptyNameSet
 freeNamesIfDCoercion (IfaceTransDCo c1 c2)
   = freeNamesIfDCoercion c1 &&& freeNamesIfDCoercion c2
-freeNamesIfDCoercion (IfaceCoDCo co) = freeNamesIfCoercion co
+freeNamesIfDCoercion (IfaceDehydrateCo co) = freeNamesIfCoercion co
+freeNamesIfDCoercion (IfaceUnivDCo p rhs)  = freeNamesIfProv freeNamesIfDCoercion p &&& freeNamesIfType rhs
 
-freeNamesIfProv :: IfaceUnivCoProv -> NameSet
-freeNamesIfProv (IfacePhantomProv co)    = freeNamesIfCoercion co
-freeNamesIfProv (IfaceProofIrrelProv co) = freeNamesIfCoercion co
-freeNamesIfProv (IfaceDCoProv dco)       = freeNamesIfDCoercion dco
-freeNamesIfProv (IfacePluginProv _)      = emptyNameSet
-freeNamesIfProv (IfaceCorePrepProv _)    = emptyNameSet
+freeNamesIfProv :: (co -> NameSet) -> IfaceUnivCoProv co -> NameSet
+freeNamesIfProv free_names (IfacePhantomProv co)    = free_names co
+freeNamesIfProv free_names (IfaceProofIrrelProv co) = free_names co
+freeNamesIfProv _          (IfacePluginProv _)      = emptyNameSet
+freeNamesIfProv _          (IfaceCorePrepProv _)    = emptyNameSet
 
 freeNamesIfVarBndr :: VarBndr IfaceBndr vis -> NameSet
 freeNamesIfVarBndr (Bndr bndr _) = freeNamesIfBndr bndr

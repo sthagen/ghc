@@ -648,9 +648,12 @@ tyCoFVsOfCo (HoleCo h) fv_cand in_scope acc
   = tyCoFVsOfCoVar (coHoleCoVar h) fv_cand in_scope acc
     -- See Note [CoercionHoles and coercion free variables]
 tyCoFVsOfCo (AxiomInstCo _ _ cos) fv_cand in_scope acc = tyCoFVsOfCos cos fv_cand in_scope acc
+tyCoFVsOfCo (HydrateDCo _ t1 dco) fv_cand in_scope acc
+  = (tyCoFVsOfType t1 `unionFV` tyCoFVsOfDCo dco) fv_cand in_scope acc
 tyCoFVsOfCo (UnivCo p _ t1 t2) fv_cand in_scope acc
-  = (tyCoFVsOfProv p `unionFV` tyCoFVsOfType t1
-                     `unionFV` tyCoFVsOfType t2) fv_cand in_scope acc
+  = (tyCoFVsOfProv tyCoFVsOfCo p
+      `unionFV` tyCoFVsOfType t1
+      `unionFV` tyCoFVsOfType t2) fv_cand in_scope acc
 tyCoFVsOfCo (SymCo co)          fv_cand in_scope acc = tyCoFVsOfCo co fv_cand in_scope acc
 tyCoFVsOfCo (TransCo co1 co2)   fv_cand in_scope acc = (tyCoFVsOfCo co1 `unionFV` tyCoFVsOfCo co2) fv_cand in_scope acc
 tyCoFVsOfCo (NthCo _ _ co)      fv_cand in_scope acc = tyCoFVsOfCo co fv_cand in_scope acc
@@ -664,12 +667,11 @@ tyCoFVsOfCoVar :: CoVar -> FV
 tyCoFVsOfCoVar v fv_cand in_scope acc
   = (unitFV v `unionFV` tyCoFVsOfType (varType v)) fv_cand in_scope acc
 
-tyCoFVsOfProv :: UnivCoProvenance -> FV
-tyCoFVsOfProv (PhantomProv co)    fv_cand in_scope acc = tyCoFVsOfCo co fv_cand in_scope acc
-tyCoFVsOfProv (ProofIrrelProv co) fv_cand in_scope acc = tyCoFVsOfCo co fv_cand in_scope acc
-tyCoFVsOfProv (PluginProv _)      fv_cand in_scope acc = emptyFV fv_cand in_scope acc
-tyCoFVsOfProv (CorePrepProv _)    fv_cand in_scope acc = emptyFV fv_cand in_scope acc
-tyCoFVsOfProv (DCoProv dco)       fv_cand in_scope acc = tyCoFVsOfDCo dco fv_cand in_scope acc
+tyCoFVsOfProv :: (co -> FV) -> UnivCoProvenance co -> FV
+tyCoFVsOfProv tyCoFVs_of_co (PhantomProv co)    fv_cand in_scope acc = tyCoFVs_of_co co fv_cand in_scope acc
+tyCoFVsOfProv tyCoFVs_of_co (ProofIrrelProv co) fv_cand in_scope acc = tyCoFVs_of_co co fv_cand in_scope acc
+tyCoFVsOfProv _             (PluginProv _)      fv_cand in_scope acc = emptyFV fv_cand in_scope acc
+tyCoFVsOfProv _             (CorePrepProv _)    fv_cand in_scope acc = emptyFV fv_cand in_scope acc
 
 tyCoFVsOfCos :: [Coercion] -> FV
 tyCoFVsOfCos []       fv_cand in_scope acc = emptyFV fv_cand in_scope acc
@@ -680,18 +682,19 @@ tyCoFVsOfDCos []       fv_cand in_scope acc = emptyFV fv_cand in_scope acc
 tyCoFVsOfDCos (co:cos) fv_cand in_scope acc = (tyCoFVsOfDCo co `unionFV` tyCoFVsOfDCos cos) fv_cand in_scope acc
 
 tyCoFVsOfDCo :: DCoercion -> FV
-tyCoFVsOfDCo ReflDCo            fv_cand in_scope acc = emptyFV fv_cand in_scope acc
-tyCoFVsOfDCo (GReflRightDCo co) fv_cand in_scope acc = tyCoFVsOfCo co fv_cand in_scope acc
-tyCoFVsOfDCo (GReflLeftDCo  co) fv_cand in_scope acc = tyCoFVsOfCo co fv_cand in_scope acc
-tyCoFVsOfDCo (TyConAppDCo dcos) fv_cand in_scope acc = tyCoFVsOfDCos dcos fv_cand in_scope acc
-tyCoFVsOfDCo (AppDCo dco1 dco2) fv_cand in_scope acc = (tyCoFVsOfDCo dco1 `unionFV` tyCoFVsOfDCo dco2) fv_cand in_scope acc
-tyCoFVsOfDCo (ForAllDCo tv kind_co co) fv_cand in_scope acc
-  = (tyCoFVsVarBndr tv (tyCoFVsOfDCo co) `unionFV` tyCoFVsOfCo kind_co) fv_cand in_scope acc
+tyCoFVsOfDCo ReflDCo              fv_cand in_scope acc = emptyFV fv_cand in_scope acc
+tyCoFVsOfDCo (GReflRightDCo mco)  fv_cand in_scope acc = tyCoFVsOfMCo mco fv_cand in_scope acc
+tyCoFVsOfDCo (GReflLeftDCo  mco)  fv_cand in_scope acc = tyCoFVsOfMCo mco fv_cand in_scope acc
+tyCoFVsOfDCo (TyConAppDCo dcos)   fv_cand in_scope acc = tyCoFVsOfDCos dcos fv_cand in_scope acc
+tyCoFVsOfDCo (AppDCo dco1 dco2)   fv_cand in_scope acc = (tyCoFVsOfDCo dco1 `unionFV` tyCoFVsOfDCo dco2) fv_cand in_scope acc
+tyCoFVsOfDCo (ForAllDCo tv kind_dco co) fv_cand in_scope acc
+  = (tyCoFVsVarBndr tv (tyCoFVsOfDCo co) `unionFV` tyCoFVsOfDCo kind_dco) fv_cand in_scope acc
 tyCoFVsOfDCo (CoVarDCo v)         fv_cand in_scope acc = tyCoFVsOfCoVar v fv_cand in_scope acc
 tyCoFVsOfDCo AxiomInstDCo{}       fv_cand in_scope acc = emptyFV fv_cand in_scope acc
 tyCoFVsOfDCo StepsDCo{}           fv_cand in_scope acc = emptyFV fv_cand in_scope acc
 tyCoFVsOfDCo (TransDCo dco1 dco2) fv_cand in_scope acc = (tyCoFVsOfDCo dco1 `unionFV` tyCoFVsOfDCo dco2) fv_cand in_scope acc
-tyCoFVsOfDCo (CoDCo co)           fv_cand in_scope acc = tyCoFVsOfCo co fv_cand in_scope acc
+tyCoFVsOfDCo (DehydrateCo co)     fv_cand in_scope acc = tyCoFVsOfCo co fv_cand in_scope acc
+tyCoFVsOfDCo (UnivDCo p rhs)      fv_cand in_scope acc = (tyCoFVsOfProv tyCoFVsOfDCo p `unionFV` tyCoFVsOfType rhs) fv_cand in_scope acc
 
 ----- Whether a covar is /Almost Devoid/ in a type or coercion ----
 
@@ -726,8 +729,11 @@ almost_devoid_co_var_of_co (CoVarCo v) cv = v /= cv
 almost_devoid_co_var_of_co (HoleCo h)  cv = (coHoleCoVar h) /= cv
 almost_devoid_co_var_of_co (AxiomInstCo _ _ cos) cv
   = almost_devoid_co_var_of_cos cos cv
+almost_devoid_co_var_of_co (HydrateDCo _ t1 dco) cv
+  = almost_devoid_co_var_of_type t1 cv
+  && almost_devoid_co_var_of_dco dco cv
 almost_devoid_co_var_of_co (UnivCo p _ t1 t2) cv
-  = almost_devoid_co_var_of_prov p cv
+  = almost_devoid_co_var_of_prov almost_devoid_co_var_of_co p cv
   && almost_devoid_co_var_of_type t1 cv
   && almost_devoid_co_var_of_type t2 cv
 almost_devoid_co_var_of_co (SymCo co) cv
@@ -772,7 +778,7 @@ almost_devoid_co_var_of_dco (AppDCo co arg) cv
   = almost_devoid_co_var_of_dco co cv
   && almost_devoid_co_var_of_dco arg cv
 almost_devoid_co_var_of_dco (ForAllDCo v kind_co co) cv
-  = almost_devoid_co_var_of_co kind_co cv
+  = almost_devoid_co_var_of_dco kind_co cv
   && (v == cv || almost_devoid_co_var_of_dco co cv)
 almost_devoid_co_var_of_dco (CoVarDCo v) cv = v /= cv
 almost_devoid_co_var_of_dco AxiomInstDCo{} _ = True
@@ -780,18 +786,19 @@ almost_devoid_co_var_of_dco StepsDCo{} _     = True
 almost_devoid_co_var_of_dco (TransDCo co1 co2) cv
   = almost_devoid_co_var_of_dco co1 cv
   && almost_devoid_co_var_of_dco co2 cv
-almost_devoid_co_var_of_dco (CoDCo co) cv
+almost_devoid_co_var_of_dco (DehydrateCo co) cv
   = almost_devoid_co_var_of_co co cv
+almost_devoid_co_var_of_dco (UnivDCo prov rhs) cv
+  = almost_devoid_co_var_of_prov almost_devoid_co_var_of_dco prov cv
+  && almost_devoid_co_var_of_type rhs cv
 
-almost_devoid_co_var_of_prov :: UnivCoProvenance -> CoVar -> Bool
-almost_devoid_co_var_of_prov (PhantomProv co) cv
-  = almost_devoid_co_var_of_co co cv
-almost_devoid_co_var_of_prov (ProofIrrelProv co) cv
-  = almost_devoid_co_var_of_co co cv
-almost_devoid_co_var_of_prov (DCoProv dco) cv
-  = almost_devoid_co_var_of_dco dco cv
-almost_devoid_co_var_of_prov (PluginProv _)   _ = True
-almost_devoid_co_var_of_prov (CorePrepProv _) _ = True
+almost_devoid_co_var_of_prov :: (co -> CoVar -> Bool) -> UnivCoProvenance co -> CoVar -> Bool
+almost_devoid_co_var_of_prov almost_devoid_co (PhantomProv co) cv
+  = almost_devoid_co co cv
+almost_devoid_co_var_of_prov almost_devoid_co (ProofIrrelProv co) cv
+  = almost_devoid_co co cv
+almost_devoid_co_var_of_prov _ (PluginProv _)   _ = True
+almost_devoid_co_var_of_prov _ (CorePrepProv _) _ = True
 
 almost_devoid_co_var_of_type :: Type -> CoVar -> Bool
 almost_devoid_co_var_of_type (TyVarTy _) _ = True

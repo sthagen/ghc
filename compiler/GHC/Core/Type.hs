@@ -36,6 +36,8 @@ module GHC.Core.Type (
         splitFunTy, splitFunTy_maybe,
         splitFunTys, funResultTy, funArgTy,
 
+        coreFullView,
+
         mkTyConApp, mkTyConTy, mkTYPEapp,
         tyConAppTyCon_maybe, tyConAppTyConPicky_maybe,
         tyConAppArgs_maybe, tyConAppTyCon, tyConAppArgs,
@@ -277,11 +279,12 @@ import {-# SOURCE #-} GHC.Core.Coercion
    , mkReflDCo
    , mkGReflRightDCo
    , mkGReflLeftDCo
-   , mkCoDCo
+   , mkDehydrateCo
+   , mkHydrateDCo
    , mkCoVarDCo
    , decomposePiCos, coercionKind, coercionLKind
    , coercionRKind, coercionType
-   , isReflexiveCo, seqCo )
+   , isReflexiveCo, seqCo, mkUnivDCo )
 
 -- others
 import GHC.Utils.Misc
@@ -612,8 +615,10 @@ expandTypeSynonyms ty
       = substCoVar subst cv
     go_co subst (AxiomInstCo ax ind args)
       = mkAxiomInstCo ax ind (map (go_co subst) args)
+    go_co subst (HydrateDCo r t1 dco)
+      = mkHydrateDCo r (go subst t1) (go_dco subst dco)
     go_co subst (UnivCo p r t1 t2)
-      = mkUnivCo (go_prov subst p) r (go subst t1) (go subst t2)
+      = mkUnivCo (go_prov (go_co subst) p) r (go subst t1) (go subst t2)
     go_co subst (SymCo co)
       = mkSymCo (go_co subst co)
     go_co subst (TransCo co1 co2)
@@ -635,32 +640,32 @@ expandTypeSynonyms ty
 
     go_dco _     ReflDCo
       = mkReflDCo
-    go_dco subst (GReflRightDCo co)
-      = mkGReflRightDCo (go_co subst co)
-    go_dco subst (GReflLeftDCo co)
-      = mkGReflLeftDCo (go_co subst co)
+    go_dco subst (GReflRightDCo mco)
+      = mkGReflRightDCo (go_mco subst mco)
+    go_dco subst (GReflLeftDCo mco)
+      = mkGReflLeftDCo (go_mco subst mco)
     go_dco subst (TyConAppDCo args)
       = mkTyConAppDCo (map (go_dco subst) args)
     go_dco subst (AppDCo co arg)
       = mkAppDCo (go_dco subst co) (go_dco subst arg)
-    go_dco subst (ForAllDCo tv kind_co co)
-      = let (subst', tv', kind_co') = go_cobndr subst tv kind_co in
-        mkForAllDCo tv' kind_co' (go_dco subst' co)
+    go_dco subst (ForAllDCo tv kind_dco co)
+      = let (subst', tv', kind_co') = go_cobndr subst tv (mkHydrateDCo Nominal (varType tv) kind_dco) in
+        mkForAllDCo tv' (mkDehydrateCo kind_co') (go_dco subst' co)
     go_dco subst (CoVarDCo cv)
-      = mkCoDCo (substCoVar subst cv)
+      = mkDehydrateCo (substCoVar subst cv)
     go_dco _     dco@AxiomInstDCo{}
       = dco
     go_dco _     dco@StepsDCo{}
       = dco
     go_dco subst (TransDCo co1 co2)
       = mkTransDCo (go_dco subst co1) (go_dco subst co2)
-    go_dco subst (CoDCo co) = mkCoDCo (go_co subst co)
+    go_dco subst (DehydrateCo co) = mkDehydrateCo (go_co subst co)
+    go_dco subst (UnivDCo p rhs)  = mkUnivDCo (go_prov (go_dco subst) p) (go subst rhs)
 
-    go_prov subst (PhantomProv co)    = PhantomProv (go_co subst co)
-    go_prov subst (ProofIrrelProv co) = ProofIrrelProv (go_co subst co)
-    go_prov subst (DCoProv dco)       = DCoProv (go_dco subst dco)
-    go_prov _     p@(PluginProv _)    = p
-    go_prov _     p@(CorePrepProv _)  = p
+    go_prov do_subst (PhantomProv co)    = PhantomProv    $ do_subst co
+    go_prov do_subst (ProofIrrelProv co) = ProofIrrelProv $ do_subst co
+    go_prov _        p@(PluginProv _)    = p
+    go_prov _        p@(CorePrepProv _)  = p
 
       -- the "False" and "const" are to accommodate the type of
       -- substForAllCoBndrUsing, which is general enough to
@@ -962,7 +967,8 @@ mapTyCoX (TyCoMapper { tcm_tyvar = tyvar
     go_co env (FunCo r cw c1 c2)   = mkFunCo r <$> go_co env cw <*> go_co env c1 <*> go_co env c2
     go_co env (CoVarCo cv)        = covar env cv
     go_co env (HoleCo hole)       = cohole env hole
-    go_co env (UnivCo p r t1 t2)  = mkUnivCo <$> go_prov env p <*> pure r
+    go_co env (HydrateDCo r t1 dco) = mkHydrateDCo r <$> go_ty env t1 <*> go_dco env dco
+    go_co env (UnivCo p r t1 t2)  = mkUnivCo <$> go_prov (go_co env) p <*> pure r
                                     <*> go_ty env t1 <*> go_ty env t2
     go_co env (SymCo co)          = mkSymCo <$> go_co env co
     go_co env (TransCo c1 c2)     = mkTransCo <$> go_co env c1 <*> go_co env c2
@@ -995,14 +1001,14 @@ mapTyCoX (TyCoMapper { tcm_tyvar = tyvar
     go_dcos env (co:cos) = (:) <$> go_dco env co <*> go_dcos env cos
 
     go_dco _   ReflDCo                = pure mkReflDCo
-    go_dco env (GReflRightDCo co)     = mkGReflRightDCo <$> go_co env co
-    go_dco env (GReflLeftDCo co)      = mkGReflLeftDCo <$> go_co env co
+    go_dco env (GReflRightDCo mco)    = mkGReflRightDCo <$> go_mco env mco
+    go_dco env (GReflLeftDCo  mco)    = mkGReflLeftDCo  <$> go_mco env mco
     go_dco env (AppDCo c1 c2)         = mkAppDCo <$> go_dco env c1 <*> go_dco env c2
-    go_dco env (CoVarDCo cv)          = mkCoDCo <$> covar env cv
+    go_dco env (CoVarDCo cv)          = mkDehydrateCo <$> covar env cv
     go_dco env (TransDCo c1 c2)       = mkTransDCo <$> go_dco env c1 <*> go_dco env c2
     go_dco _   dco@AxiomInstDCo{}     = pure dco
     go_dco _   dco@StepsDCo{}         = pure dco
-    go_dco env (CoDCo co)             = mkCoDCo <$> go_co env co
+    go_dco env (DehydrateCo co)       = mkDehydrateCo <$> go_co env co
     go_dco env co@(TyConAppDCo cos)
       -- Not a TcTyCon
       | null cos    -- Avoid allocation in this very
@@ -1010,18 +1016,18 @@ mapTyCoX (TyCoMapper { tcm_tyvar = tyvar
 
       | otherwise
       = mkTyConAppDCo <$> go_dcos env cos
-    go_dco env (ForAllDCo tv kind_co co)
-      = do { kind_co' <- go_co env kind_co
+    go_dco env (ForAllDCo tv kind_dco co)
+      = do { kind_dco' <- go_dco env kind_dco
            ; (env', tv') <- tycobinder env tv Inferred
            ; co' <- go_dco env' co
-           ; return $ mkForAllDCo tv' kind_co' co' }
+           ; return $ mkForAllDCo tv' kind_dco' co' }
         -- See Note [Efficiency for ForAllCo case of mapTyCoX]
+    go_dco env (UnivDCo p rhs)     = mkUnivDCo <$> go_prov (go_dco env) p <*> go_ty env rhs
 
-    go_prov env (PhantomProv co)    = PhantomProv <$> go_co env co
-    go_prov env (ProofIrrelProv co) = ProofIrrelProv <$> go_co env co
-    go_prov env (DCoProv dco)       = DCoProv <$> go_dco env dco
-    go_prov _   p@(PluginProv _)    = return p
-    go_prov _   p@(CorePrepProv _)  = return p
+    go_prov go (PhantomProv co)    = PhantomProv    <$> go co
+    go_prov go (ProofIrrelProv co) = ProofIrrelProv <$> go co
+    go_prov _  p@(PluginProv _)    = return p
+    go_prov _  p@(CorePrepProv _)  = return p
 
 
 {-
@@ -3342,7 +3348,10 @@ occCheckExpand vs_to_avoid ty
 
     go_co cxt (AxiomInstCo ax ind args) = do { args' <- mapM (go_co cxt) args
                                              ; return (mkAxiomInstCo ax ind args') }
-    go_co cxt (UnivCo p r ty1 ty2)      = do { p' <- go_prov cxt p
+    go_co ctx (HydrateDCo r ty1 dco)    = do { ty1' <- go ctx ty1
+                                             ; dco' <- go_dco ctx dco
+                                             ; return (mkHydrateDCo r ty1' dco') }
+    go_co cxt (UnivCo p r ty1 ty2)      = do { p' <- go_prov (go_co cxt) p
                                              ; ty1' <- go cxt ty1
                                              ; ty2' <- go cxt ty2
                                              ; return (mkUnivCo p' r ty1' ty2') }
@@ -3367,22 +3376,22 @@ occCheckExpand vs_to_avoid ty
 
     ------------------
     go_dco _   ReflDCo                = pure mkReflDCo
-    go_dco cxt (GReflRightDCo co)     = mkGReflRightDCo <$> go_co cxt co
-    go_dco cxt (GReflLeftDCo  co)     = mkGReflLeftDCo  <$> go_co cxt co
+    go_dco cxt (GReflRightDCo mco)    = mkGReflRightDCo <$> go_mco cxt mco
+    go_dco cxt (GReflLeftDCo  mco)    = mkGReflLeftDCo  <$> go_mco cxt mco
       -- Note: Coercions do not contain type synonyms
     go_dco cxt (TyConAppDCo args)     = do { args' <- mapM (go_dco cxt) args
                                            ; return (mkTyConAppDCo args') }
     go_dco cxt (AppDCo co arg)        = do { co' <- go_dco cxt co
                                            ; arg' <- go_dco cxt arg
                                            ; return (mkAppDCo co' arg') }
-    go_dco cxt@(as, env) (ForAllDCo tv kind_co body_co)
-      = do { kind_co' <- go_co cxt kind_co
-           ; let tv' = setVarType tv $
-                       coercionLKind kind_co'
+    go_dco cxt@(as, env) (ForAllDCo tv kind_dco body_co)
+      = do { kind_dco' <- go_dco cxt kind_dco
+           ; tv_kind' <- go cxt (varType tv)
+           ; let tv' = setVarType tv $ tv_kind'
                  env' = extendVarEnv env tv tv'
                  as'  = as `delVarSet` tv
            ; body' <- go_dco (as', env') body_co
-           ; return (mkForAllDCo tv' kind_co' body') }
+           ; return (mkForAllDCo tv' kind_dco' body') }
     go_dco (as,env) co@(CoVarDCo c)
       | Just c' <- lookupVarEnv env c = return (mkCoVarDCo c')
       | bad_var_occ as c              = Nothing
@@ -3393,14 +3402,14 @@ occCheckExpand vs_to_avoid ty
     go_dco cxt (TransDCo co1 co2)     = do { co1' <- go_dco cxt co1
                                            ; co2' <- go_dco cxt co2
                                            ; return (mkTransDCo co1' co2') }
-    go_dco cxt (CoDCo co) = mkCoDCo <$> go_co cxt co
+    go_dco ctx (UnivDCo prov rhs)     = mkUnivDCo <$> go_prov (go_dco ctx) prov <*> go ctx rhs
+    go_dco cxt (DehydrateCo co)       = mkDehydrateCo <$> go_co cxt co
 
     ------------------
-    go_prov cxt (PhantomProv co)    = PhantomProv <$> go_co cxt co
-    go_prov cxt (ProofIrrelProv co) = ProofIrrelProv <$> go_co cxt co
-    go_prov cxt (DCoProv dco)       = DCoProv <$> go_dco cxt dco
-    go_prov _   p@(PluginProv _)    = return p
-    go_prov _   p@(CorePrepProv _)  = return p
+    go_prov prov_go (PhantomProv co)    = PhantomProv    <$> prov_go co
+    go_prov prov_go (ProofIrrelProv co) = ProofIrrelProv <$> prov_go co
+    go_prov _       p@(PluginProv _)    = return p
+    go_prov _       p@(CorePrepProv _)  = return p
 
 
 {-
@@ -3437,7 +3446,8 @@ tyConsOfType ty
      go_co (ForAllCo _ kind_co co) = go_co kind_co `unionUniqSets` go_co co
      go_co (FunCo _ co_mult co1 co2) = go_co co_mult `unionUniqSets` go_co co1 `unionUniqSets` go_co co2
      go_co (AxiomInstCo ax _ args) = go_ax ax `unionUniqSets` go_cos args
-     go_co (UnivCo p _ t1 t2)      = go_prov p `unionUniqSets` go t1 `unionUniqSets` go t2
+     go_co (HydrateDCo _ t1 dco)   = go t1 `unionUniqSets` go_dco dco
+     go_co (UnivCo p _ t1 t2)      = go_prov go_co p `unionUniqSets` go t1 `unionUniqSets` go t2
      go_co (CoVarCo {})            = emptyUniqSet
      go_co (HoleCo {})             = emptyUniqSet
      go_co (SymCo co)              = go_co co
@@ -3452,23 +3462,23 @@ tyConsOfType ty
      go_mco MRefl    = emptyUniqSet
      go_mco (MCo co) = go_co co
 
-     go_dco ReflDCo                  = emptyUniqSet
-     go_dco (GReflRightDCo co)       = go_co co
-     go_dco (GReflLeftDCo co)        = go_co co
-     go_dco (TyConAppDCo args)       = go_dcos args
-     go_dco (AppDCo co arg)          = go_dco co `unionUniqSets` go_dco arg
-     go_dco (ForAllDCo _ kind_co co) = go_co kind_co `unionUniqSets` go_dco co
-     go_dco (AxiomInstDCo ax)        = go_ax ax
-     go_dco StepsDCo{}               = emptyUniqSet
-     go_dco (CoVarDCo {})            = emptyUniqSet
-     go_dco (TransDCo co1 co2)       = go_dco co1 `unionUniqSets` go_dco co2
-     go_dco (CoDCo co)               = go_co co
+     go_dco ReflDCo                   = emptyUniqSet
+     go_dco (GReflRightDCo mco)       = go_mco mco
+     go_dco (GReflLeftDCo  mco)       = go_mco mco
+     go_dco (TyConAppDCo args)        = go_dcos args
+     go_dco (AppDCo co arg)           = go_dco co `unionUniqSets` go_dco arg
+     go_dco (ForAllDCo _ kind_dco co) = go_dco kind_dco `unionUniqSets` go_dco co
+     go_dco (AxiomInstDCo ax)         = go_ax ax
+     go_dco StepsDCo{}                = emptyUniqSet
+     go_dco (CoVarDCo {})             = emptyUniqSet
+     go_dco (TransDCo co1 co2)        = go_dco co1 `unionUniqSets` go_dco co2
+     go_dco (DehydrateCo co)          = go_co co
+     go_dco (UnivDCo p rhs)           = go_prov go_dco p `unionUniqSets` go rhs
 
-     go_prov (PhantomProv co)    = go_co co
-     go_prov (ProofIrrelProv co) = go_co co
-     go_prov (DCoProv dco)       = go_dco dco
-     go_prov (PluginProv _)      = emptyUniqSet
-     go_prov (CorePrepProv _)    = emptyUniqSet
+     go_prov get_tycons (PhantomProv co)    = get_tycons co
+     go_prov get_tycons (ProofIrrelProv co) = get_tycons co
+     go_prov _          (PluginProv _)      = emptyUniqSet
+     go_prov _          (CorePrepProv _)    = emptyUniqSet
         -- this last case can happen from the tyConsOfType used from
         -- checkTauTvUpdate
 

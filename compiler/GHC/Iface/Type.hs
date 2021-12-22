@@ -383,7 +383,8 @@ data IfaceCoercion
        -- There are only a fixed number of CoAxiomRules, so it suffices
        -- to use an IfaceLclName to distinguish them.
        -- See Note [Adding built-in type families] in GHC.Builtin.Types.Literals
-  | IfaceUnivCo       IfaceUnivCoProv Role IfaceType IfaceType
+  | IfaceHydrateDCo   Role IfaceType IfaceDCoercion
+  | IfaceUnivCo       (IfaceUnivCoProv IfaceCoercion) Role IfaceType IfaceType
   | IfaceSymCo        IfaceCoercion
   | IfaceTransCo      IfaceCoercion IfaceCoercion
   | IfaceNthCo        Int IfaceCoercion
@@ -396,24 +397,24 @@ data IfaceCoercion
 
 data IfaceDCoercion
   = IfaceReflDCo
-  | IfaceGReflRightDCo IfaceCoercion
-  | IfaceGReflLeftDCo IfaceCoercion
-  | IfaceTyConAppDCo  [IfaceDCoercion]
-  | IfaceAppDCo       IfaceDCoercion IfaceDCoercion
-  | IfaceForAllDCo    IfaceBndr IfaceCoercion IfaceDCoercion
-  | IfaceCoVarDCo     IfLclName
-  | IfaceFreeCoVarDCo CoVar
-  | IfaceAxiomInstDCo IfExtName
-  | IfaceStepsDCo     !Int
-  | IfaceTransDCo     IfaceDCoercion IfaceDCoercion
-  | IfaceCoDCo        IfaceCoercion
+  | IfaceGReflRightDCo IfaceMCoercion
+  | IfaceGReflLeftDCo  IfaceMCoercion
+  | IfaceTyConAppDCo   [IfaceDCoercion]
+  | IfaceAppDCo        IfaceDCoercion IfaceDCoercion
+  | IfaceForAllDCo     IfaceBndr IfaceDCoercion IfaceDCoercion
+  | IfaceCoVarDCo      IfLclName
+  | IfaceFreeCoVarDCo  CoVar
+  | IfaceAxiomInstDCo  IfExtName
+  | IfaceStepsDCo      !Int
+  | IfaceTransDCo      IfaceDCoercion IfaceDCoercion
+  | IfaceDehydrateCo   IfaceCoercion
+  | IfaceUnivDCo       (IfaceUnivCoProv IfaceDCoercion) IfaceType
 
-data IfaceUnivCoProv
-  = IfacePhantomProv IfaceCoercion
-  | IfaceProofIrrelProv IfaceCoercion
+data IfaceUnivCoProv iface_co
+  = IfacePhantomProv iface_co
+  | IfaceProofIrrelProv iface_co
   | IfacePluginProv String
   | IfaceCorePrepProv Bool  -- See defn of CorePrepProv
-  | IfaceDCoProv IfaceDCoercion
 
 {- Note [Holes in IfaceCoercion]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -599,7 +600,8 @@ substIfaceType env ty
     go_co (IfaceCoVarCo cv)          = IfaceCoVarCo cv
     go_co (IfaceHoleCo cv)           = IfaceHoleCo cv
     go_co (IfaceAxiomInstCo a i cos) = IfaceAxiomInstCo a i (go_cos cos)
-    go_co (IfaceUnivCo prov r t1 t2) = IfaceUnivCo (go_prov prov) r (go t1) (go t2)
+    go_co (IfaceHydrateDCo r t1 dco) = IfaceHydrateDCo r (go t1) (go_dco dco)
+    go_co (IfaceUnivCo prov r t1 t2) = IfaceUnivCo (go_prov go_co prov) r (go t1) (go t2)
     go_co (IfaceSymCo co)            = IfaceSymCo (go_co co)
     go_co (IfaceTransCo co1 co2)     = IfaceTransCo (go_co co1) (go_co co2)
     go_co (IfaceNthCo n co)          = IfaceNthCo n (go_co co)
@@ -610,8 +612,8 @@ substIfaceType env ty
     go_co (IfaceAxiomRuleCo n cos)   = IfaceAxiomRuleCo n (go_cos cos)
 
     go_dco IfaceReflDCo                = IfaceReflDCo
-    go_dco (IfaceGReflRightDCo co)     = IfaceGReflRightDCo (go_co co)
-    go_dco (IfaceGReflLeftDCo co)      = IfaceGReflLeftDCo (go_co co)
+    go_dco (IfaceGReflRightDCo mco)    = IfaceGReflRightDCo (go_mco mco)
+    go_dco (IfaceGReflLeftDCo  mco)    = IfaceGReflLeftDCo  (go_mco mco)
     go_dco (IfaceTyConAppDCo cos)      = IfaceTyConAppDCo (go_dcos cos)
     go_dco (IfaceAppDCo c1 c2)         = IfaceAppDCo (go_dco c1) (go_dco c2)
     go_dco (IfaceForAllDCo {})         = pprPanic "substIfaceCoercion" (ppr ty)
@@ -620,16 +622,16 @@ substIfaceType env ty
     go_dco dco@IfaceAxiomInstDCo{}     = dco
     go_dco dco@IfaceStepsDCo{}         = dco
     go_dco (IfaceTransDCo co1 co2)     = IfaceTransDCo (go_dco co1) (go_dco co2)
-    go_dco (IfaceCoDCo co)             = IfaceCoDCo (go_co co)
+    go_dco (IfaceDehydrateCo co)       = IfaceDehydrateCo (go_co co)
+    go_dco (IfaceUnivDCo p rhs)        = IfaceUnivDCo (go_prov go_dco p) (go rhs)
 
     go_cos = map go_co
     go_dcos = map go_dco
 
-    go_prov (IfacePhantomProv co)    = IfacePhantomProv (go_co co)
-    go_prov (IfaceDCoProv dco)       = IfaceDCoProv (go_dco dco)
-    go_prov (IfaceProofIrrelProv co) = IfaceProofIrrelProv (go_co co)
-    go_prov co@(IfacePluginProv _)   = co
-    go_prov co@(IfaceCorePrepProv _) = co
+    go_prov do_subst (IfacePhantomProv co)    = IfacePhantomProv    (do_subst co)
+    go_prov do_subst (IfaceProofIrrelProv co) = IfaceProofIrrelProv (do_subst co)
+    go_prov _        co@(IfacePluginProv _)   = co
+    go_prov _        co@(IfaceCorePrepProv _) = co
 
 substIfaceAppArgs :: IfaceTySubst -> IfaceAppArgs -> IfaceAppArgs
 substIfaceAppArgs env args
@@ -1234,9 +1236,9 @@ pprIfaceForAllPartMust :: [IfaceForAllBndr] -> [IfacePredType] -> SDoc -> SDoc
 pprIfaceForAllPartMust tvs ctxt sdoc
   = ppr_iface_forall_part ShowForAllMust tvs ctxt sdoc
 
-pprIfaceForAllCoPart :: [(IfLclName, IfaceCoercion)] -> SDoc -> SDoc
-pprIfaceForAllCoPart tvs sdoc
-  = sep [ pprIfaceForAllCo tvs, sdoc ]
+pprIfaceForAllCoPart :: (iface_co -> SDoc) -> [(IfLclName, iface_co)] -> SDoc -> SDoc
+pprIfaceForAllCoPart ppr_iface_co tvs sdoc
+  = sep [ pprIfaceForAllCo ppr_iface_co tvs, sdoc ]
 
 ppr_iface_forall_part :: ShowForAllFlag
                       -> [IfaceForAllBndr] -> [IfacePredType] -> SDoc -> SDoc
@@ -1273,12 +1275,12 @@ ppr_itv_bndrs all_bndrs@(bndr@(Bndr _ vis) : bndrs) vis1
   | otherwise   = (all_bndrs, [])
 ppr_itv_bndrs [] _ = ([], [])
 
-pprIfaceForAllCo :: [(IfLclName, IfaceCoercion)] -> SDoc
-pprIfaceForAllCo []  = empty
-pprIfaceForAllCo tvs = text "forall" <+> pprIfaceForAllCoBndrs tvs <> dot
+pprIfaceForAllCo :: (iface_co -> SDoc) -> [(IfLclName, iface_co)] -> SDoc
+pprIfaceForAllCo _            []  = empty
+pprIfaceForAllCo ppr_iface_co tvs = text "forall" <+> pprIfaceForAllCoBndrs ppr_iface_co tvs <> dot
 
-pprIfaceForAllCoBndrs :: [(IfLclName, IfaceCoercion)] -> SDoc
-pprIfaceForAllCoBndrs bndrs = hsep $ map pprIfaceForAllCoBndr bndrs
+pprIfaceForAllCoBndrs :: (iface_co -> SDoc) -> [(IfLclName, iface_co)] -> SDoc
+pprIfaceForAllCoBndrs ppr_iface_co bndrs = hsep $ map (pprIfaceForAllCoBndr ppr_iface_co) bndrs
 
 pprIfaceForAllBndr :: IfaceForAllBndr -> SDoc
 pprIfaceForAllBndr bndr =
@@ -1292,9 +1294,9 @@ pprIfaceForAllBndr bndr =
     -- See Note [Suppressing binder signatures]
     suppress_sig = SuppressBndrSig False
 
-pprIfaceForAllCoBndr :: (IfLclName, IfaceCoercion) -> SDoc
-pprIfaceForAllCoBndr (tv, kind_co)
-  = parens (ppr tv <+> dcolon <+> pprIfaceCoercion kind_co)
+pprIfaceForAllCoBndr :: (iface_co -> SDoc) -> (IfLclName, iface_co) -> SDoc
+pprIfaceForAllCoBndr ppr_iface_co (tv, kind_co)
+  = parens (ppr tv <+> dcolon <+> ppr_iface_co kind_co)
 
 -- | Show forall flag
 --
@@ -1744,7 +1746,7 @@ ppr_co ctxt_prec (IfaceAppCo co1 co2)
     ppr_co funPrec co1 <+> pprParendIfaceCoercion co2
 ppr_co ctxt_prec co@(IfaceForAllCo {})
   = maybeParen ctxt_prec funPrec $
-    pprIfaceForAllCoPart tvs (pprIfaceCoercion inner_co)
+    pprIfaceForAllCoPart pprIfaceCoercion tvs (pprIfaceCoercion inner_co)
   where
     (tvs, inner_co) = split_co co
 
@@ -1759,10 +1761,12 @@ ppr_co _ (IfaceFreeCoVar covar) = ppr covar
 ppr_co _ (IfaceCoVarCo covar)   = ppr covar
 ppr_co _ (IfaceHoleCo covar)    = braces (ppr covar)
 
+ppr_co _ (IfaceHydrateDCo role ty1 dco)
+  = text "Hydrate" <> (parens $ ppr role <+> ppr_ty appPrec ty1 <+> pprParendIfaceDCoercion dco)
 ppr_co _ (IfaceUnivCo prov role ty1 ty2)
   = text "Univ" <> (parens $
-      sep [ ppr role <+> pprIfaceUnivCoProv prov
-          , dcolon <+>  ppr_ty appPrec ty1 <+> text "~" <+> ppr_ty appPrec ty2 ])
+      sep [ ppr role <+> pprIfaceUnivCoProv pprParendIfaceCoercion prov
+          , dcolon <+> ppr_ty appPrec ty1 <+> text "~" <+> ppr_ty appPrec ty2 ])
 
 ppr_co ctxt_prec (IfaceInstCo co ty)
   = maybeParen ctxt_prec appPrec $
@@ -1810,12 +1814,12 @@ pprParendIfaceDCoercion = ppr_dco appPrec
 
 ppr_dco :: PprPrec -> IfaceDCoercion -> SDoc
 ppr_dco _         IfaceReflDCo = text "Refl"
-ppr_dco ctxt_prec (IfaceGReflRightDCo co)
+ppr_dco ctxt_prec (IfaceGReflRightDCo mco)
   = maybeParen ctxt_prec appPrec $
-    text "GReflRight" <+> pprParendIfaceCoercion co
-ppr_dco ctxt_prec (IfaceGReflLeftDCo co)
+    text "GReflRight" <+> case mco of { IfaceMRefl -> text "MRefl" ; IfaceMCo co -> pprParendIfaceCoercion co }
+ppr_dco ctxt_prec (IfaceGReflLeftDCo mco)
   = maybeParen ctxt_prec appPrec $
-    text "GReflLeft" <+> pprParendIfaceCoercion co
+    text "GReflLeft" <+> case mco of { IfaceMRefl -> text "MRefl" ; IfaceMCo co -> pprParendIfaceCoercion co }
 ppr_dco ctxt_prec (IfaceTyConAppDCo cos)
   = ppr_special_dco ctxt_prec (text "TyConApp") cos
 ppr_dco ctxt_prec (IfaceAppDCo co1 co2)
@@ -1823,7 +1827,7 @@ ppr_dco ctxt_prec (IfaceAppDCo co1 co2)
     ppr_dco funPrec co1 <+> pprParendIfaceDCoercion co2
 ppr_dco ctxt_prec co@(IfaceForAllDCo {})
   = maybeParen ctxt_prec funPrec $
-    pprIfaceForAllCoPart tvs (pprIfaceDCoercion inner_dco)
+    pprIfaceForAllCoPart pprIfaceDCoercion tvs (pprIfaceDCoercion inner_dco)
   where
     (tvs, inner_dco) = split_dco co
 
@@ -1848,8 +1852,13 @@ ppr_dco ctxt_prec (IfaceTransDCo co1 co2)
         ppr_trans c                     = [semi <+> ppr_dco opPrec c]
     in maybeParen ctxt_prec opPrec $
         vcat (ppr_dco topPrec co1 : ppr_trans co2)
-ppr_dco ctxt_prec (IfaceCoDCo co)
-  = ppr_co ctxt_prec co
+ppr_dco ctxt_prec (IfaceDehydrateCo co)
+  = maybeParen ctxt_prec appPrec
+  $ text "Dehydrate" <+> pprParendIfaceCoercion co
+ppr_dco _ (IfaceUnivDCo prov rhs)
+  = text "UnivDCo" <> (parens $
+      sep [ pprIfaceUnivCoProv pprParendIfaceDCoercion prov
+          , dcolon <+> text "_ ~>" <+> ppr_ty appPrec rhs ])
 
 -- AMG TODO: deduplicate some of the pretty-printing code
 ppr_special_dco :: PprPrec -> SDoc -> [IfaceDCoercion] -> SDoc
@@ -1859,17 +1868,15 @@ ppr_special_dco ctxt_prec doc cos
 
 
 ------------------
-pprIfaceUnivCoProv :: IfaceUnivCoProv -> SDoc
-pprIfaceUnivCoProv (IfacePhantomProv co)
-  = text "phantom" <+> pprParendIfaceCoercion co
-pprIfaceUnivCoProv (IfaceProofIrrelProv co)
-  = text "irrel" <+> pprParendIfaceCoercion co
-pprIfaceUnivCoProv (IfacePluginProv s)
+pprIfaceUnivCoProv :: (iface_co -> SDoc) -> IfaceUnivCoProv iface_co -> SDoc
+pprIfaceUnivCoProv ppr_co (IfacePhantomProv co)
+  = text "phantom" <+> ppr_co co
+pprIfaceUnivCoProv ppr_co (IfaceProofIrrelProv co)
+  = text "irrel" <+> ppr_co co
+pprIfaceUnivCoProv _ (IfacePluginProv s)
   = text "plugin" <+> doubleQuotes (text s)
-pprIfaceUnivCoProv (IfaceCorePrepProv _)
+pprIfaceUnivCoProv _ (IfaceCorePrepProv _)
   = text "CorePrep"
-pprIfaceUnivCoProv (IfaceDCoProv dco)
-  = text "dco" <+> pprParendIfaceDCoercion dco
 
 -------------------
 instance Outputable IfaceTyCon where
@@ -2152,6 +2159,11 @@ instance Binary IfaceCoercion where
           putByte bh 17
           put_ bh a
           put_ bh b
+  put_ bh (IfaceHydrateDCo r ty dco) = do
+          putByte bh 18
+          put_ bh r
+          put_ bh ty
+          put_ bh dco
   put_ _ (IfaceFreeCoVar cv)
        = pprPanic "Can't serialise IfaceFreeCoVar" (ppr cv)
   put_ _  (IfaceHoleCo cv)
@@ -2215,6 +2227,10 @@ instance Binary IfaceCoercion where
            17-> do a <- get bh
                    b <- get bh
                    return $ IfaceAxiomRuleCo a b
+           18-> do r <- get bh
+                   t <- get bh
+                   dco <- get bh
+                   return $ IfaceHydrateDCo r t dco
            _ -> panic ("get IfaceCoercion " ++ show tag)
 
 instance Binary IfaceDCoercion where
@@ -2251,9 +2267,13 @@ instance Binary IfaceDCoercion where
           putByte bh 11
           put_ bh a
           put_ bh b
-  put_ bh (IfaceCoDCo a) = do
+  put_ bh (IfaceDehydrateCo a) = do
           putByte bh 12
           put_ bh a
+  put_ bh (IfaceUnivDCo p rhs) = do
+          putByte bh 13
+          put_ bh p
+          put_ bh rhs
   put_ _ (IfaceFreeCoVarDCo cv)
        = pprPanic "Can't serialise IfaceFreeCoVarDCo" (ppr cv)
           -- See Note [Holes in IfaceCoercion]
@@ -2285,10 +2305,13 @@ instance Binary IfaceDCoercion where
                    b <- get bh
                    return $ IfaceTransDCo a b
            12 -> do a <- get bh
-                    return $ IfaceCoDCo a
+                    return $ IfaceDehydrateCo a
+           13 -> do p <- get bh
+                    rhs <- get bh
+                    return $ IfaceUnivDCo p rhs
            _ -> panic ("get IfaceDCoercion " ++ show tag)
 
-instance Binary IfaceUnivCoProv where
+instance Binary iface_co => Binary (IfaceUnivCoProv iface_co) where
   put_ bh (IfacePhantomProv a) = do
           putByte bh 1
           put_ bh a
@@ -2300,9 +2323,6 @@ instance Binary IfaceUnivCoProv where
           put_ bh a
   put_ bh (IfaceCorePrepProv a) = do
           putByte bh 4
-          put_ bh a
-  put_ bh (IfaceDCoProv a) = do
-          putByte bh 5
           put_ bh a
 
   get bh = do
@@ -2316,8 +2336,6 @@ instance Binary IfaceUnivCoProv where
                    return $ IfacePluginProv a
            4 -> do a <- get bh
                    return (IfaceCorePrepProv a)
-           5 -> do a <- get bh
-                   return (IfaceDCoProv a)
            _ -> panic ("get IfaceUnivCoProv " ++ show tag)
 
 
@@ -2360,6 +2378,7 @@ instance NFData IfaceCoercion where
     IfaceCoVarCo f1 -> rnf f1
     IfaceAxiomInstCo f1 f2 f3 -> rnf f1 `seq` rnf f2 `seq` rnf f3
     IfaceAxiomRuleCo f1 f2 -> rnf f1 `seq` rnf f2
+    IfaceHydrateDCo f1 f2 f3 -> f1 `seq` rnf f2 `seq` rnf f3
     IfaceUnivCo f1 f2 f3 f4 -> rnf f1 `seq` f2 `seq` rnf f3 `seq` rnf f4
     IfaceSymCo f1 -> rnf f1
     IfaceTransCo f1 f2 -> rnf f1 `seq` rnf f2
@@ -2371,7 +2390,23 @@ instance NFData IfaceCoercion where
     IfaceFreeCoVar f1 -> f1 `seq` ()
     IfaceHoleCo f1 -> f1 `seq` ()
 
-instance NFData IfaceUnivCoProv where
+instance NFData IfaceDCoercion where
+  rnf = \case
+    IfaceReflDCo -> ()
+    IfaceGReflRightDCo f1 -> rnf f1
+    IfaceGReflLeftDCo f1 -> rnf f1
+    IfaceTyConAppDCo f1 -> rnf f1
+    IfaceAppDCo f1 f2 -> rnf f1 `seq` rnf f2
+    IfaceForAllDCo f1 f2 f3 -> rnf f1 `seq` rnf f2 `seq` rnf f3
+    IfaceCoVarDCo f1 -> rnf f1
+    IfaceAxiomInstDCo f1 -> rnf f1
+    IfaceStepsDCo f1 -> rnf f1
+    IfaceUnivDCo f1 f2 -> rnf f1 `seq` rnf f2
+    IfaceTransDCo f1 f2 -> rnf f1 `seq` rnf f2
+    IfaceDehydrateCo f1 -> rnf f1
+    IfaceFreeCoVarDCo f1 -> f1 `seq` ()
+
+instance NFData (IfaceUnivCoProv co) where
   rnf x = seq x ()
 
 instance NFData IfaceMCoercion where

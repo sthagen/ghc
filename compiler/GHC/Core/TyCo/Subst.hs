@@ -71,8 +71,10 @@ import {-# SOURCE #-} GHC.Core.Coercion
    , mkReflDCo
    , mkGReflRightDCo
    , mkGReflLeftDCo
-   , mkCoDCo
-   , coercionKind, coercionLKind, coVarKindsTypesRole )
+   , mkHydrateDCo
+   , mkDehydrateCo
+   , coercionKind, coercionLKind, coVarKindsTypesRole, mkUnivDCo )
+import GHC.Core.Coercion.Axiom (Role(..))
 import {-# SOURCE #-} GHC.Core.TyCo.Ppr ( pprTyVar )
 
 import GHC.Core.TyCo.Rep
@@ -861,7 +863,8 @@ subst_co_dco subst = (go, go_dco)
     go (FunCo r w co1 co2)   = ((mkFunCo r $! go w) $! go co1) $! go co2
     go (CoVarCo cv)          = substCoVar subst cv
     go (AxiomInstCo con ind cos) = mkAxiomInstCo con ind $! map go cos
-    go (UnivCo p r t1 t2)    = (((mkUnivCo $! go_prov p) $! r) $!
+    go (HydrateDCo r ty dco) = ((mkHydrateDCo $! r) $! go_ty ty) $! go_dco dco
+    go (UnivCo p r t1 t2)    = (((mkUnivCo $! go_prov go p) $! r) $!
                                 (go_ty t1)) $! (go_ty t2)
     go (SymCo co)            = mkSymCo $! (go co)
     go (TransCo co1 co2)     = (mkTransCo $! (go co1)) $! (go co2)
@@ -876,26 +879,26 @@ subst_co_dco subst = (go, go_dco)
 
     go_dco :: DCoercion -> DCoercion
     go_dco ReflDCo                = mkReflDCo
-    go_dco (GReflRightDCo co)     = mkGReflRightDCo $! go co
-    go_dco (GReflLeftDCo co)      = mkGReflLeftDCo $! go co
+    go_dco (GReflRightDCo mco)    = mkGReflRightDCo $! go_mco mco
+    go_dco (GReflLeftDCo  mco)    = mkGReflLeftDCo  $! go_mco mco
     go_dco (TyConAppDCo args)     = let args' = map go_dco args
                                     in  args' `seqList` mkTyConAppDCo args'
     go_dco (AppDCo co arg)        = (mkAppDCo $! go_dco co) $! go_dco arg
-    go_dco (CoVarDCo cv)          = mkCoDCo $! substCoVar subst cv
+    go_dco (CoVarDCo cv)          = mkDehydrateCo $! substCoVar subst cv
     go_dco dco@AxiomInstDCo{}     = dco
     go_dco dco@StepsDCo{}         = dco
     go_dco (TransDCo co1 co2)     = (mkTransDCo $! (go_dco co1)) $! (go_dco co2)
-    go_dco (CoDCo co)             = mkCoDCo $! go co
-    go_dco (ForAllDCo tv kind_co co)
-      = case substForAllCoBndrUnchecked subst tv kind_co of
+    go_dco (DehydrateCo co)       = mkDehydrateCo $! go co
+    go_dco (ForAllDCo tv kind_dco co)
+      = case substForAllCoBndrUnchecked subst tv (mkHydrateDCo Nominal (varType tv) kind_dco) of
          (subst', tv', kind_co') ->
-          ((mkForAllDCo $! tv') $! kind_co') $! subst_dco subst' co
+          ((mkForAllDCo $! tv') $! mkDehydrateCo kind_co') $! subst_dco subst' co
+    go_dco (UnivDCo prov rhs)     = (mkUnivDCo (go_prov go_dco prov)) $! go_ty rhs
 
-    go_prov (PhantomProv kco)    = PhantomProv $! go kco
-    go_prov (ProofIrrelProv kco) = ProofIrrelProv $! go kco
-    go_prov (DCoProv dco)        = DCoProv $! go_dco dco
-    go_prov p@(PluginProv _)     = p
-    go_prov p@(CorePrepProv _)   = p
+    go_prov do_subst (PhantomProv kco)    = PhantomProv $! do_subst kco
+    go_prov do_subst (ProofIrrelProv kco) = ProofIrrelProv $! do_subst kco
+    go_prov _        p@(PluginProv _)     = p
+    go_prov _        p@(CorePrepProv _)   = p
 
     -- See Note [Substituting in a coercion hole]
     go_hole h@(CoercionHole { ch_co_var = cv })

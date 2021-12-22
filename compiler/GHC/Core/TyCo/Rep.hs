@@ -41,7 +41,7 @@ module GHC.Core.TyCo.Rep (
         CoercionN, CoercionR, CoercionP, KindCoercion,
         MCoercion(..), MCoercionR, MCoercionN,
 
-        DCoercion(..), DCoercionN,
+        DCoercion(..), DCoercionN, KindDCoercion,
 
         -- * Functions over types
         mkNakedTyConTy, mkTyVarTy, mkTyVarTys,
@@ -1150,7 +1150,9 @@ data Coercion
     -- The number coercions should match exactly the expectations
     -- of the CoAxiomRule (i.e., the rule is fully saturated).
 
-  | UnivCo UnivCoProvenance Role Type Type
+  | HydrateDCo Role Type DCoercion
+
+  | UnivCo (UnivCoProvenance Coercion) Role Type Type
       -- :: _ -> "e" -> _ -> _ -> e
 
   | SymCo Coercion             -- :: e -> e
@@ -1563,7 +1565,8 @@ in nominal ways. If not, having w be representational is OK.
 -}
 
 
-type DCoercionN = DCoercion
+type DCoercionN    = DCoercion
+type KindDCoercion = DCoercionN
 
 data DCoercion
   -- Each constructor has a "role signature", indicating the way roles are
@@ -1578,8 +1581,9 @@ data DCoercion
   = -- Refl :: e
     ReflDCo  -- See Note [Refl invariant]
 
-  | GReflRightDCo Coercion
-  | GReflLeftDCo  Coercion
+  | GReflRightDCo MCoercionN
+  | GReflLeftDCo  MCoercionN
+
 
   -- These ones simply lift the correspondingly-named
   -- Type constructors into Coercions
@@ -1596,7 +1600,7 @@ data DCoercion
           -- AppCo :: e -> N -> e
 
   -- See Note [Forall coercions]
-  | ForAllDCo TyCoVar KindCoercion DCoercion --- AMG TODO: do we need TyCoVar? Use KindCoercion or KindDCoercion?
+  | ForAllDCo TyCoVar KindDCoercion DCoercion
          -- ForAllCo :: _ -> N -> e -> e
 
 --  | FunDCo DCoercionN DCoercion DCoercion         -- lift FunTy
@@ -1618,8 +1622,9 @@ data DCoercion
   | StepsDCo !Int
     -- Covers AxiomRuleCo and AxiomInstCo for closed type families / newtypes
 
---  | UnivCo UnivCoProvenance Role Type Type
-      -- :: _ -> "e" -> _ -> _ -> e
+  | UnivDCo
+      (UnivCoProvenance DCoercion)
+      Type -- ^ RHS type
 
 --  | SymCo Coercion             -- :: e -> e
   | TransDCo DCoercion DCoercion  -- :: e -> e -> e
@@ -1630,7 +1635,7 @@ data DCoercion
 --  | HoleCo CoercionHole              -- ^ See Note [Coercion holes]
                                      -- Only present during typechecking
 
-  | CoDCo Coercion
+  | DehydrateCo Coercion
   deriving Data.Data
 
 instance Outputable DCoercion where
@@ -1662,13 +1667,13 @@ role and kind, which is done in the UnivCo constructor.
 -- as a totally independent coercion form; their only commonality is
 -- that they don't tell you what types they coercion between. (That info
 -- is in the 'UnivCo' constructor of 'Coercion'.
-data UnivCoProvenance
-  = PhantomProv KindCoercion -- ^ See Note [Phantom coercions]. Only in Phantom
+data UnivCoProvenance kco
+  = PhantomProv kco -- ^ See Note [Phantom coercions]. Only in Phantom
                              -- roled coercions
 
-  | ProofIrrelProv KindCoercion  -- ^ From the fact that any two coercions are
-                                 --   considered equivalent. See Note [ProofIrrelProv].
-                                 -- Can be used in Nominal or Representational coercions
+  | ProofIrrelProv kco  -- ^ From the fact that any two coercions are
+                        --   considered equivalent. See Note [ProofIrrelProv].
+                        -- Can be used in Nominal or Representational coercions
 
   | PluginProv String  -- ^ From a plugin, which asserts that this coercion
                        --   is sound. The string is for the use of the plugin.
@@ -1677,16 +1682,13 @@ data UnivCoProvenance
       Bool   -- True  <=> the UnivCo must be homogeneously kinded
              -- False <=> allow hetero-kinded, e.g. Int ~ Int#
 
-  | DCoProv DCoercion
-
   deriving Data.Data
 
-instance Outputable UnivCoProvenance where
+instance Outputable (UnivCoProvenance kco) where
   ppr (PhantomProv _)    = text "(phantom)"
   ppr (ProofIrrelProv _) = text "(proof irrel.)"
   ppr (PluginProv str)   = parens (text "plugin" <+> brackets (text str))
   ppr (CorePrepProv _)   = text "(CorePrep)"
-  ppr (DCoProv dco)      = parens (ppr dco)
 
 -- | A coercion to be filled in by the type-checker. See Note [Coercion holes]
 data CoercionHole
@@ -1982,8 +1984,10 @@ foldTyCo (TyCoFolder { tcf_view       = view
     go_co env (CoVarCo cv)            = covar env cv
     go_co env (AxiomInstCo _ _ args)  = go_cos env args
     go_co env (HoleCo hole)           = cohole env hole
-    go_co env (UnivCo p _ t1 t2)      = go_prov env p `mappend` go_ty env t1
-                                                      `mappend` go_ty env t2
+    go_co env (HydrateDCo _ t1 dco)   = go_ty env t1 `mappend` go_dco env dco
+    go_co env (UnivCo p _ t1 t2)      = go_prov (go_co env) p
+                                          `mappend` go_ty env t1
+                                          `mappend` go_ty env t2
     go_co env (SymCo co)              = go_co env co
     go_co env (TransCo c1 c2)         = go_co env c1 `mappend` go_co env c2
     go_co env (AxiomRuleCo _ cos)     = go_cos env cos
@@ -2001,27 +2005,29 @@ foldTyCo (TyCoFolder { tcf_view       = view
     go_dcos _   []     = mempty
     go_dcos env (c:cs) = go_dco env c `mappend` go_dcos env cs
 
-    go_dco _   ReflDCo                = mempty
-    go_dco env (GReflRightDCo co)     = go_co env co
-    go_dco env (GReflLeftDCo  co)     = go_co env co
-    go_dco env (TyConAppDCo args)     = go_dcos env args
-    go_dco env (AppDCo c1 c2)         = go_dco env c1 `mappend` go_dco env c2
-    go_dco env (CoVarDCo cv)          = covar env cv
-    go_dco _   AxiomInstDCo{}         = mempty
-    go_dco _   StepsDCo{}             = mempty
-    go_dco env (TransDCo c1 c2)       = go_dco env c1 `mappend` go_dco env c2
-    go_dco env (CoDCo co)             = go_co env co
-    go_dco env (ForAllDCo tv kind_co co)
-      = go_co env kind_co `mappend` go_ty env (varType tv)
-                          `mappend` go_dco env' co
+    go_dco _   ReflDCo                  = mempty
+    go_dco _   (GReflRightDCo MRefl)    = mempty
+    go_dco env (GReflRightDCo (MCo co)) = go_co env co
+    go_dco _   (GReflLeftDCo MRefl)     = mempty
+    go_dco env (GReflLeftDCo (MCo co))  = go_co env co
+    go_dco env (TyConAppDCo args)       = go_dcos env args
+    go_dco env (AppDCo c1 c2)           = go_dco env c1 `mappend` go_dco env c2
+    go_dco env (CoVarDCo cv)            = covar env cv
+    go_dco _   AxiomInstDCo{}           = mempty
+    go_dco _   StepsDCo{}               = mempty
+    go_dco env (TransDCo c1 c2)         = go_dco env c1 `mappend` go_dco env c2
+    go_dco env (DehydrateCo co)         = go_co env co
+    go_dco env (ForAllDCo tv kind_dco co)
+      = go_dco env kind_dco `mappend` go_ty env (varType tv)
+                            `mappend` go_dco env' co
       where
         env' = tycobinder env tv Inferred
+    go_dco env (UnivDCo prov t2)       = go_prov (go_dco env) prov `mappend` go_ty env t2
 
-    go_prov env (PhantomProv co)    = go_co env co
-    go_prov env (ProofIrrelProv co) = go_co env co
-    go_prov env (DCoProv dco)       = go_dco env dco
-    go_prov _   (PluginProv _)      = mempty
-    go_prov _   (CorePrepProv _)    = mempty
+    go_prov do_fold (PhantomProv co)    = do_fold co
+    go_prov do_fold (ProofIrrelProv co) = do_fold co
+    go_prov _       (PluginProv _)      = mempty
+    go_prov _       (CorePrepProv _)    = mempty
 
 {- *********************************************************************
 *                                                                      *
@@ -2064,7 +2070,8 @@ coercionSize (FunCo _ w co1 co2) = 1 + coercionSize co1 + coercionSize co2
 coercionSize (CoVarCo _)         = 1
 coercionSize (HoleCo _)          = 1
 coercionSize (AxiomInstCo _ _ args) = 1 + sum (map coercionSize args)
-coercionSize (UnivCo p _ t1 t2)  = 1 + provSize p + typeSize t1 + typeSize t2
+coercionSize (HydrateDCo _ t1 dco) = 1 + typeSize t1 + dcoercionSize dco
+coercionSize (UnivCo p _ t1 t2)  = 1 + provSize coercionSize p + typeSize t1 + typeSize t2
 coercionSize (SymCo co)          = 1 + coercionSize co
 coercionSize (TransCo co1 co2)   = 1 + coercionSize co1 + coercionSize co2
 coercionSize (NthCo _ _ co)      = 1 + coercionSize co
@@ -2075,24 +2082,26 @@ coercionSize (SubCo co)          = 1 + coercionSize co
 coercionSize (AxiomRuleCo _ cs)  = 1 + sum (map coercionSize cs)
 
 dcoercionSize :: DCoercion -> Int
-dcoercionSize ReflDCo            = 1
-dcoercionSize (GReflRightDCo co) = 1 + coercionSize co
-dcoercionSize (GReflLeftDCo  co) = 1 + coercionSize co
-dcoercionSize (TyConAppDCo args) = 1 + sum (map dcoercionSize args)
-dcoercionSize (AppDCo co arg)    = dcoercionSize co + dcoercionSize arg
-dcoercionSize (ForAllDCo _ h co) = 1 + dcoercionSize co + coercionSize h
-dcoercionSize (CoVarDCo _)       = 1
-dcoercionSize AxiomInstDCo{}     = 1
-dcoercionSize StepsDCo{}         = 1
-dcoercionSize (TransDCo co1 co2) = 1 + dcoercionSize co1 + dcoercionSize co2
-dcoercionSize (CoDCo co)         = 1 + coercionSize co
+dcoercionSize ReflDCo                  = 1
+dcoercionSize (GReflRightDCo MRefl)    = 1
+dcoercionSize (GReflRightDCo (MCo co)) = 1 + coercionSize co
+dcoercionSize (GReflLeftDCo  MRefl)    = 1
+dcoercionSize (GReflLeftDCo  (MCo co)) = 1 + coercionSize co
+dcoercionSize (TyConAppDCo args)       = 1 + sum (map dcoercionSize args)
+dcoercionSize (AppDCo co arg)          = dcoercionSize co + dcoercionSize arg
+dcoercionSize (ForAllDCo _ h co)       = 1 + dcoercionSize co + dcoercionSize h
+dcoercionSize (CoVarDCo _)             = 1
+dcoercionSize AxiomInstDCo{}           = 1
+dcoercionSize StepsDCo{}               = 1
+dcoercionSize (TransDCo co1 co2)       = 1 + dcoercionSize co1 + dcoercionSize co2
+dcoercionSize (DehydrateCo co)         = 1 + coercionSize co
+dcoercionSize (UnivDCo prov rhs)       = 1 + provSize dcoercionSize prov + typeSize rhs
 
-provSize :: UnivCoProvenance -> Int
-provSize (PhantomProv co)    = 1 + coercionSize co
-provSize (ProofIrrelProv co) = 1 + coercionSize co
-provSize (DCoProv dco)       = 1 + dcoercionSize dco
-provSize (PluginProv _)      = 1
-provSize (CorePrepProv _)    = 1
+provSize :: (co -> Int) -> UnivCoProvenance co -> Int
+provSize co_size (PhantomProv co)    = 1 + co_size co
+provSize co_size (ProofIrrelProv co) = 1 + co_size co
+provSize _       (PluginProv _)      = 1
+provSize _       (CorePrepProv _)    = 1
 
 {-
 ************************************************************************

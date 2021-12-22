@@ -141,7 +141,8 @@ synonymTyConsOfType ty
      go_co (CoVarCo _)            = emptyNameEnv
      go_co (HoleCo {})            = emptyNameEnv
      go_co (AxiomInstCo _ _ cs)   = go_co_s cs
-     go_co (UnivCo p _ ty ty')    = go_prov p `plusNameEnv` go ty `plusNameEnv` go ty'
+     go_co (HydrateDCo _ ty dco)  = go ty `plusNameEnv` go_dco dco
+     go_co (UnivCo p _ ty ty')    = go_prov go_co p `plusNameEnv` go ty `plusNameEnv` go ty'
      go_co (SymCo co)             = go_co co
      go_co (TransCo co co')       = go_co co `plusNameEnv` go_co co'
      go_co (NthCo _ _ co)         = go_co co
@@ -152,22 +153,22 @@ synonymTyConsOfType ty
      go_co (AxiomRuleCo _ cs)     = go_co_s cs
 
      go_dco ReflDCo                = emptyNameEnv
-     go_dco (GReflRightDCo co)     = go_co co
-     go_dco (GReflLeftDCo co)      = go_co co
+     go_dco (GReflRightDCo mco)    = go_mco mco
+     go_dco (GReflLeftDCo  mco)    = go_mco mco
      go_dco (TyConAppDCo cs)       = go_dco_s cs
      go_dco (AppDCo co co')        = go_dco co `plusNameEnv` go_dco co'
-     go_dco (ForAllDCo _ co co')   = go_co co `plusNameEnv` go_dco co'
+     go_dco (ForAllDCo _ dco dco') = go_dco dco `plusNameEnv` go_dco dco'
      go_dco (CoVarDCo _)           = emptyNameEnv
      go_dco AxiomInstDCo{}         = emptyNameEnv
      go_dco StepsDCo{}             = emptyNameEnv
      go_dco (TransDCo co co')      = go_dco co `plusNameEnv` go_dco co'
-     go_dco (CoDCo co)             = go_co co
+     go_dco (DehydrateCo co)       = go_co co
+     go_dco (UnivDCo prov rhs)     = go_prov go_dco prov `plusNameEnv` go rhs
 
-     go_prov (PhantomProv co)     = go_co co
-     go_prov (ProofIrrelProv co)  = go_co co
-     go_prov (DCoProv dco)        = go_dco dco
-     go_prov (PluginProv _)       = emptyNameEnv
-     go_prov (CorePrepProv _)     = emptyNameEnv
+     go_prov syns (PhantomProv co)     = syns co
+     go_prov syns (ProofIrrelProv co)  = syns co
+     go_prov _    (PluginProv _)       = emptyNameEnv
+     go_prov _    (CorePrepProv _)     = emptyNameEnv
 
      go_tc tc | isTypeSynonymTyCon tc = unitNameEnv (tyConName tc) tc
               | otherwise             = emptyNameEnv

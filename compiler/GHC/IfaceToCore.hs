@@ -1417,7 +1417,8 @@ tcIfaceCo = go
                                         ForAllCo tv' k' <$> go c }
     go (IfaceCoVarCo n)          = CoVarCo <$> go_var n
     go (IfaceAxiomInstCo n i cs) = AxiomInstCo <$> tcIfaceCoAxiom n <*> pure i <*> mapM go cs
-    go (IfaceUnivCo p r t1 t2)   = UnivCo <$> tcIfaceUnivCoProv p <*> pure r
+    go (IfaceHydrateDCo r t1 dco)= HydrateDCo r <$> tcIfaceType t1 <*> tcIfaceDCo dco
+    go (IfaceUnivCo p r t1 t2)   = UnivCo <$> tcIfaceUnivCoProv go p <*> pure r
                                           <*> tcIfaceType t1 <*> tcIfaceType t2
     go (IfaceSymCo c)            = SymCo    <$> go c
     go (IfaceTransCo c1 c2)      = TransCo  <$> go c1
@@ -1440,12 +1441,16 @@ tcIfaceCo = go
 tcIfaceDCo :: IfaceDCoercion -> IfL DCoercion
 tcIfaceDCo = go
   where
+
+    go_mco IfaceMRefl    = pure MRefl
+    go_mco (IfaceMCo co) = MCo <$> tcIfaceCo co
+
     go IfaceReflDCo                = pure ReflDCo
-    go (IfaceGReflRightDCo co)     = GReflRightDCo <$> tcIfaceCo co
-    go (IfaceGReflLeftDCo co)      = GReflLeftDCo <$> tcIfaceCo co
+    go (IfaceGReflRightDCo mco)    = GReflRightDCo <$> go_mco mco
+    go (IfaceGReflLeftDCo  mco)    = GReflLeftDCo <$>  go_mco mco
     go (IfaceTyConAppDCo cs)       = TyConAppDCo <$> mapM go cs
     go (IfaceAppDCo c1 c2)         = AppDCo <$> go c1 <*> go c2
-    go (IfaceForAllDCo tv k c)     = do { k' <- tcIfaceCo k
+    go (IfaceForAllDCo tv k c)     = do { k' <- tcIfaceDCo k
                                         ; bindIfaceBndr tv $ \ tv' ->
                                             ForAllDCo tv' k' <$> go c }
     go (IfaceCoVarDCo n)           = CoVarDCo <$> go_var n
@@ -1453,19 +1458,18 @@ tcIfaceDCo = go
     go (IfaceStepsDCo n)           = pure $ StepsDCo n
     go (IfaceTransDCo c1 c2)       = TransDCo <$> go c1
                                               <*> go c2
-    go (IfaceCoDCo co)             = CoDCo <$> tcIfaceCo co
+    go (IfaceDehydrateCo co)       = DehydrateCo <$> tcIfaceCo co
+    go (IfaceUnivDCo prov rhs)     = UnivDCo <$> tcIfaceUnivCoProv go prov <*> tcIfaceType rhs
     go (IfaceFreeCoVarDCo c)       = pprPanic "tcIfaceDCo:IfaceFreeCoVarDCo" (ppr c)
 
     go_var :: FastString -> IfL CoVar
     go_var = tcIfaceLclId
 
-
-tcIfaceUnivCoProv :: IfaceUnivCoProv -> IfL UnivCoProvenance
-tcIfaceUnivCoProv (IfacePhantomProv kco)    = PhantomProv <$> tcIfaceCo kco
-tcIfaceUnivCoProv (IfaceProofIrrelProv kco) = ProofIrrelProv <$> tcIfaceCo kco
-tcIfaceUnivCoProv (IfaceDCoProv dco) = DCoProv <$> tcIfaceDCo dco
-tcIfaceUnivCoProv (IfacePluginProv str)     = return $ PluginProv str
-tcIfaceUnivCoProv (IfaceCorePrepProv b)     = return $ CorePrepProv b
+tcIfaceUnivCoProv :: (co -> IfL iface_co) -> IfaceUnivCoProv co -> IfL (UnivCoProvenance iface_co)
+tcIfaceUnivCoProv tc_co (IfacePhantomProv kco)    = PhantomProv <$> tc_co kco
+tcIfaceUnivCoProv tc_co (IfaceProofIrrelProv kco) = ProofIrrelProv <$> tc_co kco
+tcIfaceUnivCoProv _     (IfacePluginProv str)     = return $ PluginProv str
+tcIfaceUnivCoProv _     (IfaceCorePrepProv b)     = return $ CorePrepProv b
 
 {-
 ************************************************************************

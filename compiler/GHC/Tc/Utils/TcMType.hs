@@ -73,7 +73,7 @@ module GHC.Tc.Utils.TcMType (
   zonkTyCoVarsAndFV, zonkTcTypeAndFV, zonkDTyCoVarSetAndFV,
   zonkTyCoVarsAndFVList,
 
-  zonkTcType, zonkTcTypes, zonkCo,
+  zonkTcType, zonkTcTypes, zonkCo, zonkCtEvidence,
   zonkTyCoVarKind, zonkTyCoVarKindBinder,
   zonkEvVar, zonkWC, zonkImplication, zonkSimples,
   zonkId, zonkCoVar,
@@ -1523,7 +1523,9 @@ collect_cand_qtvs_co_dco orig_ty bound dv = (go_co dv, go_dco dv)
     go_co dv (FunCo _ w co1 co2)   = foldlM go_co dv [w, co1, co2]
     go_co dv (AxiomInstCo _ _ cos) = foldlM go_co dv cos
     go_co dv (AxiomRuleCo _ cos)   = foldlM go_co dv cos
-    go_co dv (UnivCo prov _ t1 t2) = do dv1 <- go_prov dv prov
+    go_co dv (HydrateDCo _ t1 dco) = do dv1 <- collect_cand_qtvs orig_ty True bound dv t1
+                                        go_dco dv1 dco
+    go_co dv (UnivCo prov _ t1 t2) = do dv1 <- go_prov go_co dv prov
                                         dv2 <- collect_cand_qtvs orig_ty True bound dv1 t1
                                         collect_cand_qtvs orig_ty True bound dv2 t2
     go_co dv (SymCo co)            = go_co dv co
@@ -1546,10 +1548,10 @@ collect_cand_qtvs_co_dco orig_ty bound dv = (go_co dv, go_dco dv)
       = do { dv1 <- go_co dv kind_co
            ; collect_cand_qtvs_co orig_ty (bound `extendVarSet` tcv) dv1 co }
 
-
+    go_dco :: CandidatesQTvs -> DCoercion -> TcM CandidatesQTvs
     go_dco dv ReflDCo                = return dv
-    go_dco dv (GReflRightDCo co)     = go_co dv co
-    go_dco dv (GReflLeftDCo co)      = go_co dv co
+    go_dco dv (GReflRightDCo mco)    = go_mco dv mco
+    go_dco dv (GReflLeftDCo  mco)    = go_mco dv mco
     go_dco dv (TyConAppDCo cos)      = foldlM go_dco dv cos
     go_dco dv (AppDCo co1 co2)       = foldlM go_dco dv [co1, co2]
     go_dco dv AxiomInstDCo{}         = return dv
@@ -1557,21 +1559,21 @@ collect_cand_qtvs_co_dco orig_ty bound dv = (go_co dv, go_dco dv)
     go_dco dv (TransDCo co1 co2)     = foldlM go_dco dv [co1, co2]
     go_dco dv (CoVarDCo cv)          = go_cv dv cv
 
-    go_dco dv (ForAllDCo tcv kind_co co)
-      = do { dv1 <- go_co dv kind_co
+    go_dco dv (ForAllDCo tcv kind_dco co)
+      = do { dv1 <- go_dco dv kind_dco
            ; collect_cand_qtvs_dco orig_ty (bound `extendVarSet` tcv) dv1 co }
 
-    go_dco dv (CoDCo co) = go_co dv co
-
+    go_dco dv (DehydrateCo co)       = go_co dv co
+    go_dco dv (UnivDCo prov rhs)     = do dv1 <- go_prov go_dco dv prov
+                                          collect_cand_qtvs orig_ty True bound dv1 rhs
 
     go_mco dv MRefl    = return dv
     go_mco dv (MCo co) = go_co dv co
 
-    go_prov dv (PhantomProv co)    = go_co dv co
-    go_prov dv (ProofIrrelProv co) = go_co dv co
-    go_prov dv (DCoProv dco)       = go_dco dv dco
-    go_prov dv (PluginProv _)      = return dv
-    go_prov dv (CorePrepProv _)    = return dv
+    go_prov collect dv (PhantomProv co)    = collect dv co
+    go_prov collect dv (ProofIrrelProv co) = collect dv co
+    go_prov _       dv (PluginProv _)      = return dv
+    go_prov _       dv (CorePrepProv _)    = return dv
 
     go_cv :: CandidatesQTvs -> CoVar -> TcM CandidatesQTvs
     go_cv dv@(DV { dv_cvs = cvs }) cv

@@ -21,7 +21,7 @@ mkFunCo :: Role -> CoercionN -> Coercion -> Coercion -> Coercion
 mkCoVarCo :: CoVar -> Coercion
 mkAxiomInstCo :: CoAxiom Branched -> BranchIndex -> [Coercion] -> Coercion
 mkPhantomCo :: Coercion -> Type -> Type -> Coercion
-mkUnivCo :: UnivCoProvenance -> Role -> Type -> Type -> Coercion
+mkUnivCo :: UnivCoProvenance Coercion -> Role -> Type -> Type -> Coercion
 mkSymCo :: Coercion -> Coercion
 mkTransCo :: Coercion -> Coercion -> Coercion
 mkNthCo :: HasDebugCallStack => Role -> Int -> Coercion -> Coercion
@@ -37,12 +37,15 @@ mkAxiomRuleCo :: CoAxiomRule -> [Coercion] -> Coercion
 mkTyConAppDCo :: [DCoercion] -> DCoercion
 mkAppDCo :: DCoercion -> DCoercion -> DCoercion
 mkTransDCo :: DCoercion -> DCoercion -> DCoercion
-mkForAllDCo :: TyCoVar -> CoercionN -> DCoercion -> DCoercion
+mkForAllDCo :: TyCoVar -> DCoercion -> DCoercion -> DCoercion
 mkReflDCo :: DCoercion
-mkGReflRightDCo :: CoercionN -> DCoercion
-mkGReflLeftDCo :: CoercionN -> DCoercion
-mkCoDCo :: Coercion -> DCoercion
+mkGReflRightDCo :: MCoercionN -> DCoercion
+mkGReflLeftDCo :: MCoercionN -> DCoercion
+mkDehydrateCo :: Coercion -> DCoercion
+mkHydrateDCo :: Role -> Type -> DCoercion -> Coercion
 mkCoVarDCo :: CoVar -> DCoercion
+mkUnivDCo :: UnivCoProvenance DCoercion -> Type -> DCoercion
+followDCo :: Role -> Type -> DCoercion -> Type
 
 isGReflCo :: Coercion -> Bool
 isReflCo :: Coercion -> Bool

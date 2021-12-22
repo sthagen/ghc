@@ -263,9 +263,9 @@ rewriteArgsNom :: CtEvidence -> TyCon -> [TcType]
 -- because rewriting may use a Derived equality ([D] a ~ ty)
 rewriteArgsNom ev tc tys
   = do { traceTcS "rewrite_args {" (vcat (map ppr tys))
-       ; ArgsReductions redns@(Reductions _ _ tys') kind_co
+       ; ArgsReductions redns@(Reductions _ tys') kind_dco
            <- runRewriteCtEv ev (rewrite_args_tc tc Nothing tys)
-       ; massert (isReflMCo kind_co)
+       ; massert (isReflMCo kind_dco)
        ; traceTcS "rewrite }" (vcat (map ppr tys'))
        ; return redns }
 
@@ -450,10 +450,10 @@ rewrite_args_fast orig_tys
 
     iterate :: [Type] -> RewriteM Reductions
     iterate (ty : tys) = do
-      Reduction  ty0 co  xi  <- rewrite_one ty
-      Reductions tys0 cos xis <- iterate tys
-      pure $ Reductions (ty0 : tys0) (co : cos) (xi : xis)
-    iterate [] = pure $ Reductions [] [] []
+      Reduction  co  xi  <- rewrite_one ty
+      Reductions cos xis <- iterate tys
+      pure $ Reductions (co : cos) (xi : xis)
+    iterate [] = pure $ Reductions [] []
 
     {-# INLINE finish #-}
     finish :: Reductions -> ArgsReductions
@@ -478,7 +478,9 @@ rewrite_args_slow binders inner_ki fvs roles tys
 -- Note [No derived kind equalities]
   = do { rewritten_args <- zipWith3M rw (map isNamedBinder binders ++ repeat True)
                                         roles tys
-       ; return $ simplifyArgsWorker binders inner_ki fvs roles rewritten_args }
+       ; tys <- mapM (liftTcS . zonkTcType) tys
+         -- SLD TODO (LC): zonking because simplifyArgsWorker needs zonked LHS (unrewritten) types
+       ; return $ simplifyArgsWorker binders inner_ki fvs roles tys rewritten_args }
   where
     {-# INLINE rw #-}
     rw :: Bool   -- must we ensure to produce a real coercion here?
@@ -552,22 +554,22 @@ rewrite_one (FunTy { ft_af = vis, ft_mult = mult, ft_arg = ty1, ft_res = ty2 })
                        (rewrite_one res_rep)
        ; role <- getRole
 
-       ; let arg_rep_co = reductionCoercion arg_rep_redn
+       ; let arg_rep_co = reductionCoercion role arg_rep arg_rep_redn
                 -- :: arg_rep ~ arg_rep_xi
              arg_ki_co  = mkTyConAppCo Nominal tYPETyCon [arg_rep_co]
                 -- :: TYPE arg_rep ~ TYPE arg_rep_xi
-             casted_arg_redn = mkCoherenceRightRedn role arg_redn arg_ki_co
+             casted_arg_redn = mkCoherenceRightRedn arg_redn arg_ki_co
                 -- :: ty1 ~> arg_xi |> arg_ki_co
 
-             res_rep_co = reductionCoercion res_rep_redn
+             res_rep_co = reductionCoercion role res_rep res_rep_redn
              res_ki_co  = mkTyConAppCo Nominal tYPETyCon [res_rep_co]
-             casted_res_redn = mkCoherenceRightRedn role res_redn res_ki_co
+             casted_res_redn = mkCoherenceRightRedn res_redn res_ki_co
 
           -- We must rewrite the representations, because that's what would
           -- be done if we used TyConApp instead of FunTy. These rewritten
           -- representations are seen only in casts of the arg and res, below.
           -- Forgetting this caused #19677.
-       ; return $ mkFunRedn role vis w_redn casted_arg_redn casted_res_redn }
+       ; return $ mkFunRedn vis w_redn casted_arg_redn casted_res_redn }
 
 rewrite_one ty@(ForAllTy {})
 -- TODO (RAE): This is inadequate, as it doesn't rewrite the kind of
@@ -583,8 +585,7 @@ rewrite_one ty@(ForAllTy {})
 rewrite_one (CastTy ty g)
   = do { redn <- rewrite_one ty
        ; g'   <- rewrite_co g
-       ; role <- getRole
-       ; return $ mkCastRedn1 role g' redn }
+       ; return $ mkCastRedn1 g' redn }
       -- This calls castCoercionKind1.
       -- It makes a /big/ difference to call castCoercionKind1 not
       -- the more general castCoercionKind2.
@@ -592,8 +593,7 @@ rewrite_one (CastTy ty g)
 
 rewrite_one (CoercionTy co)
   = do { co' <- rewrite_co co
-       ; role <- getRole
-       ; return $ mkReflCoRedn role co' }
+       ; return $ mkReflCoRedn co' }
 
 -- | "Rewrite" a coercion. Really, just zonk it so we can uphold
 -- (F1) of Note [Rewriting]
@@ -602,7 +602,7 @@ rewrite_co co = liftTcS $ zonkCo co
 
 -- | Rewrite a reduction, composing the resulting coercions.
 rewrite_reduction :: Reduction -> RewriteM Reduction
-rewrite_reduction redn0@(Reduction _ _ xi)
+rewrite_reduction redn0@(Reduction _ xi)
   = do { redn <- bumpDepth $ rewrite_one xi
        ; return $ redn0 `mkTransRedn` redn }
 
@@ -626,12 +626,12 @@ rewrite_app_ty_args :: Reduction -> [Type] -> RewriteM Reduction
 rewrite_app_ty_args redn []
   -- this will be a common case when called from rewrite_fam_app, so shortcut
   = return redn
-rewrite_app_ty_args fun_redn@(Reduction fun_ty fun_co fun_xi) arg_tys
+rewrite_app_ty_args fun_redn@(Reduction fun_co fun_xi) arg_tys
   = do { het_redn <- case tcSplitTyConApp_maybe fun_xi of
            Just (tc, xis) ->
              do { let tc_roles  = tyConRolesRepresentational tc
                       arg_roles = dropList xis tc_roles
-                ; ArgsReductions (Reductions arg_tys' arg_cos arg_xis) kind_co
+                ; ArgsReductions (Reductions arg_cos arg_xis) kind_co
                     <- rewrite_vector (tcTypeKind fun_xi) arg_roles arg_tys
 
                   -- We start with a reduction of the form
@@ -654,16 +654,15 @@ rewrite_app_ty_args fun_redn@(Reduction fun_ty fun_co fun_xi) arg_tys
                                   mkTyConAppDCo (mkReflDCos xis ++ arg_cos)
 
                 ; return $
-                    mkHetReduction
-                      (mkReduction (mkAppTys fun_ty arg_tys') app_co app_xi )
+                   mkHetReduction
+                      (mkReduction app_co app_xi )
                       kind_co }
            Nothing ->
              do { ArgsReductions redns kind_co
                     <- rewrite_vector (tcTypeKind fun_xi) (repeat Nominal) arg_tys
                 ; return $ mkHetReduction (mkAppRedns fun_redn redns) kind_co }
 
-       ; role <- getRole
-       ; return (homogeniseHetRedn role het_redn) }
+       ; return (homogeniseHetRedn het_redn) }
 
 rewrite_ty_con_app :: TyCon -> [TcType] -> RewriteM Reduction
 rewrite_ty_con_app tc tys
@@ -671,11 +670,13 @@ rewrite_ty_con_app tc tys
        ; let m_roles | Nominal <- role = Nothing
                      | otherwise       = Just $ tyConRolesX role tc
        ; ArgsReductions redns kind_co <- rewrite_args_tc tc m_roles tys
+       ; tys <- mapM (liftTcS . zonkTcType) tys
+           -- SLD TODO (LC): zonking because mkTyConAppRedn_MightBeSynonym uses mkHydrateDCo
        ; let tyconapp_redn
                 = mkHetReduction
-                    (mkTyConAppRedn_MightBeSynonym role tc redns)
+                    (mkTyConAppRedn_MightBeSynonym role tc tys redns)
                     kind_co
-       ; return $ homogeniseHetRedn role tyconapp_redn }
+       ; return $ homogeniseHetRedn tyconapp_redn }
 
 -- Rewrite a vector (list of arguments).
 rewrite_vector :: Kind   -- of the function being applied to these arguments
@@ -795,7 +796,6 @@ is inlined in that case, and only FINISH 1 is performed.
 rewrite_fam_app :: TyCon -> [TcType] -> RewriteM Reduction
   --   rewrite_fam_app            can be over-saturated
   --   rewrite_exact_fam_app      lifts out the application to top level
-  -- Postcondition: Coercion :: Xi ~ F tys
 rewrite_fam_app tc tys  -- Can be over-saturated
     = assertPpr (tys `lengthAtLeast` tyConArity tc)
                 (ppr tc $$ ppr (tyConArity tc) $$ ppr tys) $
@@ -814,7 +814,7 @@ rewrite_fam_app tc tys  -- Can be over-saturated
 -- See Note [How to normalise a family application]
 rewrite_exact_fam_app :: TyCon -> [TcType] -> RewriteM Reduction
 rewrite_exact_fam_app tc tys
-  = do { checkStackDepth (mkTyConApp tc tys)
+  = do { checkStackDepth tyconapp_ty
 
        -- Query the typechecking plugins for all their rewriting functions
        -- which apply to a type family application headed by the TyCon 'tc'.
@@ -831,7 +831,7 @@ rewrite_exact_fam_app tc tys
         -- That didn't work. So reduce the arguments, in STEP 2.
     do { eq_rel <- getEqRel
           -- checking eq_rel == NomEq saves ~0.5% in T9872a
-       ; ArgsReductions redns@(Reductions _ _ xis) kind_co <-
+       ; ArgsReductions redns@(Reductions _ xis) kind_co <-
             if eq_rel == NomEq
             then rewrite_args_tc tc Nothing tys
             else setEqRel NomEq $
@@ -855,7 +855,7 @@ rewrite_exact_fam_app tc tys
            args_co = mkTyConAppRedn role tc redns
        ;  let homogenise :: Reduction -> Reduction
               homogenise redn
-                = homogeniseHetRedn role
+                = homogeniseHetRedn
                 $ mkHetReduction
                     (args_co `mkTransRedn` redn)
                     kind_co
@@ -868,19 +868,15 @@ rewrite_exact_fam_app tc tys
        ; result2 <- liftTcS $ lookupFamAppInert tc xis
        ; flavour <- getFlavour
        ; case result2 of
-         { Just (redn, fr@(_, inert_eq_rel))
+         { Just (redn, fr)
 
              | fr `eqCanRewriteFR` (flavour, eq_rel) ->
                  do { traceRewriteM "rewrite family application with inert"
                                 (ppr tc <+> ppr xis $$ ppr redn)
-                    ; finish True (homogenise downgraded_redn) }
+                    ; finish True (homogenise redn) }
                -- this will sometimes duplicate an inert in the cache,
                -- but avoiding doing so had no impact on performance, and
                -- it seems easier not to weed out that special case
-             where
-               inert_role      = eqRelRole inert_eq_rel
-               role            = eqRelRole eq_rel
-               downgraded_redn = downgradeRedn role inert_role redn
 
          ; _ ->
 
@@ -891,6 +887,8 @@ rewrite_exact_fam_app tc tys
            -- we have made no progress at all: STEP 5 (GIVEUP).
            _         -> return give_up }}}}}
   where
+    tyconapp_ty :: Type
+    tyconapp_ty = mkTyConApp tc tys
       -- call this if the above attempts made progress.
       -- This recursively rewrites the result and then adds to the cache
     finish :: Bool  -- add to the cache?
@@ -921,23 +919,16 @@ try_to_reduce tc tys tc_rewriters
               [ runTcPluginRewriters rewrite_env tc_rewriters tys -- STEP 1a & STEP 4a
               , lookupFamAppCache tc tys                          -- STEP 1b & STEP 4b
               , matchFam tc tys ]                                 -- STEP 1c & STEP 4c
-       ; traverse downgrade result }
+       ; mapM_ add_success_trace result
+       ; return result }
   where
-    -- The result above is always Nominal. We might want a Representational
-    -- coercion; this downgrades (and prints, out of convenience).
-    downgrade :: Reduction -> RewriteM Reduction
-    downgrade redn
-      = do { traceRewriteM "Eager T.F. reduction success" $
-             vcat [ ppr tc
-                  , ppr tys
-                  , ppr redn
-                  ]
-           ; eq_rel <- getEqRel
-              -- manually doing it this way avoids allocation in the vastly
-              -- common NomEq case
-           ; case eq_rel of
-               NomEq  -> return redn
-               ReprEq -> return $ mkSubRedn redn }
+    add_success_trace :: Reduction -> RewriteM ()
+    add_success_trace redn =
+      traceRewriteM "Eager T.F. reduction success" $
+         vcat [ ppr tc
+              , ppr tys
+              , ppr redn
+              ]
 
 -- Retrieve all type-checking plugins that can rewrite a (saturated) type-family application
 -- headed by the given 'TyCon`.
@@ -1057,8 +1048,7 @@ rewrite_tyvar2 tv fr@(_, eq_rel)
                             (NomEq, NomEq)  -> rewriting_co1
                             (NomEq, ReprEq) -> mkSubCo rewriting_co1
 
-                    ; zonked_lhs <- liftTcS $ zonkTcTyVar tv
-                    ; return $ RTRFollowed $ mkReduction zonked_lhs (CoDCo rewriting_co) rhs_ty } -- AMG TODO: need to zonk kind of tv?
+                    ; return $ RTRFollowed $ mkReduction (mkDehydrateCo rewriting_co) rhs_ty }
                     -- NB: ct is Derived then fmode must be also, hence
                     -- we are not going to touch the returned coercion
                     -- so ctEvCoercion is fine.

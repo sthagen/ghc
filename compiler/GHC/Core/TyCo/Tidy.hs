@@ -244,7 +244,8 @@ tidyCoDCo env@(_, subst) = (go, go_dco)
                                  Just cv' -> CoVarCo cv'
     go (HoleCo h)            = HoleCo h
     go (AxiomInstCo con ind cos) = AxiomInstCo con ind $! strictMap go cos
-    go (UnivCo p r t1 t2)    = (((UnivCo $! (go_prov p)) $! r) $!
+    go (HydrateDCo r t1 dco) = (HydrateDCo r $! tidyType env t1) $! go_dco dco
+    go (UnivCo p r t1 t2)    = (((UnivCo $! (go_prov go p)) $! r) $!
                                 tidyType env t1) $! tidyType env t2
     go (SymCo co)            = SymCo $! go co
     go (TransCo co1 co2)     = (TransCo $! go co1) $! go co2
@@ -256,11 +257,11 @@ tidyCoDCo env@(_, subst) = (go, go_dco)
     go (AxiomRuleCo ax cos)  = AxiomRuleCo ax $ strictMap go cos
 
     go_dco ReflDCo                = ReflDCo
-    go_dco (GReflRightDCo co)     = GReflRightDCo $! go co
-    go_dco (GReflLeftDCo co)      = GReflLeftDCo $! go co
+    go_dco (GReflRightDCo mco)    = GReflRightDCo $! go_mco mco
+    go_dco (GReflLeftDCo  mco)    = GReflLeftDCo  $! go_mco mco
     go_dco (TyConAppDCo cos)      = TyConAppDCo $! strictMap go_dco cos
     go_dco (AppDCo co1 co2)       = (AppDCo $! go_dco co1) $! go_dco co2
-    go_dco (ForAllDCo tv h co)    = ((ForAllDCo $! tvp) $! (go h)) $! tidyDCo envp co
+    go_dco (ForAllDCo tv h co)    = ((ForAllDCo $! tvp) $! (go_dco h)) $! tidyDCo envp co
                                where (envp, tvp) = tidyVarBndr env tv
             -- the case above duplicates a bit of work in tidying h and the kind
             -- of tv. But the alternative is to use coercionKind, which seems worse.
@@ -270,13 +271,13 @@ tidyCoDCo env@(_, subst) = (go, go_dco)
     go_dco dco@AxiomInstDCo{} = dco
     go_dco dco@StepsDCo{}     = dco
     go_dco (TransDCo co1 co2) = (TransDCo $! go_dco co1) $! go_dco co2
-    go_dco (CoDCo co)         = CoDCo $! go co
+    go_dco (DehydrateCo co)   = DehydrateCo $! go co
+    go_dco (UnivDCo prov rhs) = (UnivDCo $! go_prov go_dco prov) $! tidyType env rhs
 
-    go_prov (PhantomProv co)    = PhantomProv $! go co
-    go_prov (ProofIrrelProv co) = ProofIrrelProv $! go co
-    go_prov (DCoProv dco)       = DCoProv $! go_dco dco
-    go_prov p@(PluginProv _)    = p
-    go_prov p@(CorePrepProv _)  = p
+    go_prov do_tidy (PhantomProv co)    = PhantomProv $! do_tidy co
+    go_prov do_tidy (ProofIrrelProv co) = ProofIrrelProv $! do_tidy co
+    go_prov _       p@(PluginProv _)    = p
+    go_prov _       p@(CorePrepProv _)  = p
 
 tidyCos :: TidyEnv -> [Coercion] -> [Coercion]
 tidyCos env = strictMap (tidyCo env)

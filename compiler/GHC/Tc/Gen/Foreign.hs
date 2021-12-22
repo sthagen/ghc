@@ -161,7 +161,7 @@ normaliseFfiType' env ty0 = runWriterT $ go Representational initRecTc ty0
                       ; return $ coercionRedn nt_co `mkTransRedn` redn } } -- AMG TODO
 
         | isFamilyTyCon tc              -- Expand open tycons
-        , redn0@(Reduction _ co ty) <- normaliseTcApp env role tc tys
+        , redn0@(Reduction co ty) <- normaliseTcApp env role tc tys
         , not (isReflDCo co) -- AMG TODO: was isReflexiveCo; does this matter?
         = do redn <- go role rec_nts ty
              return $ redn0 `mkTransRedn` redn
@@ -242,7 +242,7 @@ tcFImport (L dloc fo@(ForeignImport { fd_name = L nloc nm, fd_sig_ty = hs_ty
                                     , fd_fi = imp_decl }))
   = setSrcSpanA dloc $ addErrCtxt (foreignDeclCtxt fo)  $
     do { sig_ty <- tcHsSigType (ForSigCtxt nm) hs_ty
-       ; (redn@(Reduction _ _ norm_sig_ty), gres) <- normaliseFfiType sig_ty
+       ; (redn@(Reduction _ norm_sig_ty), gres) <- normaliseFfiType sig_ty
        ; let
            -- Drop the foralls before inspecting the
            -- structure of the foreign type.
@@ -257,7 +257,7 @@ tcFImport (L dloc fo@(ForeignImport { fd_name = L nloc nm, fd_sig_ty = hs_ty
           -- we need HsType Id hence the undefined
        ; let fi_decl = ForeignImport { fd_name = L nloc id
                                      , fd_sig_ty = undefined
-                                     , fd_i_ext = mkSymCo (reductionCoercion Representational redn)
+                                     , fd_i_ext = mkSymCo (reductionCoercion Representational sig_ty redn)
                                      , fd_fi = imp_decl' }
        ; return (id, L dloc fi_decl, gres) }
 tcFImport d = pprPanic "tcFImport" (ppr d)
@@ -395,7 +395,7 @@ tcFExport fo@(ForeignExport { fd_name = L loc nm, fd_sig_ty = hs_ty, fd_fe = spe
     sig_ty <- tcHsSigType (ForSigCtxt nm) hs_ty
     rhs <- tcCheckPolyExpr (nlHsVar nm) sig_ty
 
-    (redn@(Reduction _ _ norm_sig_ty), gres) <- normaliseFfiType sig_ty
+    (redn@(Reduction _ norm_sig_ty), gres) <- normaliseFfiType sig_ty
 
     spec' <- tcCheckFEType norm_sig_ty spec
 
@@ -412,7 +412,7 @@ tcFExport fo@(ForeignExport { fd_name = L loc nm, fd_sig_ty = hs_ty, fd_fe = spe
     return ( mkVarBind id rhs
            , ForeignExport { fd_name = L loc id
                            , fd_sig_ty = undefined
-                           , fd_e_ext = reductionCoercion Representational redn
+                           , fd_e_ext = reductionCoercion Representational sig_ty redn
                            , fd_fe = spec' }
            , gres)
 tcFExport d = pprPanic "tcFExport" (ppr d)
