@@ -72,6 +72,7 @@ import GHC.Types.Name.Ppr
 
 import Control.Monad
 import qualified GHC.LanguageExtensions as LangExt
+import GHC.Core.LateCC (addLateCostCentres)
 {-
 ************************************************************************
 *                                                                      *
@@ -222,6 +223,9 @@ getCoreToDo logger dflags
     add_caller_ccs =
         runWhen (profiling && not (null $ callerCcFilters dflags)) CoreAddCallerCcs
 
+    add_late_ccs =
+        runWhen (profiling && gopt Opt_ProfLateCcs dflags) $ CoreAddLateCcs
+
     core_todo =
      [
     -- We want to do the static argument transform before full laziness as it
@@ -366,7 +370,8 @@ getCoreToDo logger dflags
 
         maybe_rule_check FinalPhase,
 
-        add_caller_ccs
+        add_caller_ccs,
+        add_late_ccs
      ]
 
     -- Remove 'CoreDoNothing' and flatten 'CoreDoPasses' for clarity.
@@ -519,6 +524,9 @@ doCorePass pass guts = do
 
     CoreAddCallerCcs          -> {-# SCC "AddCallerCcs" #-}
                                  addCallerCostCentres guts
+
+    CoreAddLateCcs            -> {-# SCC "AddLateCcs" #-}
+                                 addLateCostCentres guts
 
     CoreDoPrintCore           -> {-# SCC "PrintCore" #-}
                                  liftIO $ printCore logger (mg_binds guts) >> return guts

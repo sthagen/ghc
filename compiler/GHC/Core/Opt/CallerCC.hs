@@ -67,6 +67,7 @@ doBind :: Env -> CoreBind -> M CoreBind
 doBind env (NonRec b rhs) = NonRec b <$> doExpr (addParent b env) rhs
 doBind env (Rec bs) = Rec <$> mapM doPair bs
   where
+    doPair :: ((Id, CoreExpr) -> M (Id, CoreExpr))
     doPair (b,rhs) = (b,) <$> doExpr (addParent b env) rhs
 
 doExpr :: Env -> CoreExpr -> M CoreExpr
