@@ -70,6 +70,8 @@ data BacktraceMechanism
     ExecutionStackBacktraceMech (Maybe Int)
   | -- | collect backtraces from Info Table Provenance Entries
     IPEBacktraceMech
+  |
+   HasCallStackBacktraceMech
   deriving (Eq, Show)
 
 showBacktraces :: [Backtrace] -> String
@@ -89,18 +91,20 @@ getDefaultBacktraceMechanisms = readIORef currentBacktraceMechanisms
 
 -- | Collect a list of 'Backtrace' via all current default 'BacktraceMechanism'.
 -- See 'setDefaultBacktraceMechanisms'
-collectBacktraces :: IO [Backtrace]
+collectBacktraces ::  HasCallStack =>IO [Backtrace]
 collectBacktraces = do
   mech <- getDefaultBacktraceMechanisms
   catMaybes `fmap` mapM collectBacktraces' mech
 
 -- | Collect a 'Backtrace' via the given 'BacktraceMechanism'.
-collectBacktraces' :: BacktraceMechanism -> IO (Maybe Backtrace)
+collectBacktraces' ::  HasCallStack => BacktraceMechanism -> IO (Maybe Backtrace)
 collectBacktraces' CostCenterBacktraceMech = do
   ptr <- getCurrentCCS ()
-  return $ if ptr == nullPtr then Nothing else Just (CostCenterBacktrace ptr)
+  pure $ if ptr == nullPtr then Nothing else Just (CostCenterBacktrace ptr)
+-- TODO: Use depth
 collectBacktraces' (ExecutionStackBacktraceMech _) = fmap ExecutionBacktrace `fmap` getStackTrace
 collectBacktraces' IPEBacktraceMech = do
   stack <- cloneMyStack
   stackEntries <- decode stack
-  return $ Just $ IPEBacktrace stackEntries
+  pure $ Just $ IPEBacktrace stackEntries
+collectBacktraces' HasCallStackBacktraceMech = pure . Just $ HasCallStackBacktrace callStack

@@ -51,6 +51,7 @@ import Unsafe.Coerce ( unsafeCoerce )
 
 import {-# SOURCE #-} GHC.IO.Exception ( userError, IOError )
 import GHC.Exception.Backtrace ( collectBacktraces )
+import {-# SOURCE #-} GHC.Stack ( HasCallStack )
 
 -- ---------------------------------------------------------------------------
 -- The IO Monad
@@ -218,7 +219,7 @@ mplusIO m n = m `catchException` \ (_ :: IOError) -> n
 -- raise an exception within the 'IO' monad because it guarantees
 -- ordering with respect to other 'IO' operations, whereas 'throw'
 -- does not.
-throwIO :: Exception e => e -> IO a
+throwIO :: (HasCallStack, Exception e) => e -> IO a
 throwIO e =
     let
       -- TODO: Bangs should probably be moved to the data type (but then break024 and T14690 fail -

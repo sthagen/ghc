@@ -1,5 +1,7 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 
-module GHC.Stack (CallStack) where
+module GHC.Stack (CallStack, HasCallStack, callStack) where
 
 import GHC.Stack.Types
+
+callStack :: HasCallStack => CallStack

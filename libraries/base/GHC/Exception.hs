@@ -50,7 +50,7 @@ import GHC.Exception.Type
 --
 -- WARNING: You may want to use 'throwIO' instead so that your pure code
 -- stays exception-free.
-throw :: forall (r :: RuntimeRep). forall (a :: TYPE r). forall e.
+throw :: HasCallStack => forall (r :: RuntimeRep). forall (a :: TYPE r). forall e.
          Exception e => e -> a
 throw e = runRW# (\s0 ->
     case unIO collectBacktraces s0 of
