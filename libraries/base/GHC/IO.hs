@@ -43,7 +43,8 @@ module GHC.IO (
         throwIOWithCallStack,
         throwIOWithBacktraceMechanism,
         throwIOWithIPEStack,
-        throwIOWithCostCenterStack
+        throwIOWithCostCenterStack,
+        throwIOWithExecutionStack
     ) where
 
 import GHC.Base
@@ -238,6 +239,8 @@ throwIO e =
     in
       IO(raiseIO# e')
 
+-- throwWithCallStack cannot call throwWithBacktraceMechanism because that would introduce unnecessary
+-- HasCallStack constraints (that would decrease performance).
 throwIOWithCallStack :: (HasCallStack, Exception e) => e -> IO a
 throwIOWithCallStack e = let
       -- TODO: Bangs should probably be moved to the data type (but then break024 and T14690 fail -
@@ -266,8 +269,8 @@ throwIOWithIPEStack = throwIOWithBacktraceMechanism collectIPEBacktrace
 throwIOWithCostCenterStack :: Exception e => e -> IO a
 throwIOWithCostCenterStack = throwIOWithBacktraceMechanism collectCostCenterBacktrace
 
-throwWithExecutionStack :: Exception e => e -> IO a
-throwWithExecutionStack = throwIOWithBacktraceMechanism collectExecutionStackBacktrace
+throwIOWithExecutionStack :: Exception e => e -> IO a
+throwIOWithExecutionStack = throwIOWithBacktraceMechanism collectExecutionStackBacktrace
 
 throwIOUserError :: String -> IO a
 throwIOUserError s = throwIO $ userError s
