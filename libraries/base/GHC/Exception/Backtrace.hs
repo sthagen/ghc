@@ -24,6 +24,10 @@ module GHC.Exception.Backtrace
     getDefaultBacktraceMechanisms,
     showBacktraces,
     collectBacktraces,
+    collectCostCenterBacktrace,
+    collectExecutionStackBacktrace,
+    collectIPEBacktrace,
+    collectHasCallStackBacktrace
   )
 where
 
@@ -93,18 +97,30 @@ getDefaultBacktraceMechanisms = readIORef currentBacktraceMechanisms
 -- See 'setDefaultBacktraceMechanisms'
 collectBacktraces ::  HasCallStack =>IO [Backtrace]
 collectBacktraces = do
-  mech <- getDefaultBacktraceMechanisms
-  catMaybes `fmap` mapM collectBacktraces' mech
+    mech <- getDefaultBacktraceMechanisms
+    catMaybes `fmap` mapM collectBacktraces' mech
+  where
+    -- | Collect a 'Backtrace' via the given 'BacktraceMechanism'.
+    collectBacktraces' ::  HasCallStack => BacktraceMechanism -> IO (Maybe Backtrace)
+    collectBacktraces' CostCenterBacktraceMech = collectCostCenterBacktrace
+    -- TODO: Use depth
+    collectBacktraces' (ExecutionStackBacktraceMech _) = collectExecutionStackBacktrace
+    collectBacktraces' IPEBacktraceMech = collectIPEBacktrace
+    collectBacktraces' HasCallStackBacktraceMech = collectHasCallStackBacktrace
 
--- | Collect a 'Backtrace' via the given 'BacktraceMechanism'.
-collectBacktraces' ::  HasCallStack => BacktraceMechanism -> IO (Maybe Backtrace)
-collectBacktraces' CostCenterBacktraceMech = do
+collectCostCenterBacktrace :: IO (Maybe Backtrace)
+collectCostCenterBacktrace = do
   ptr <- getCurrentCCS ()
   pure $ if ptr == nullPtr then Nothing else Just (CostCenterBacktrace ptr)
--- TODO: Use depth
-collectBacktraces' (ExecutionStackBacktraceMech _) = fmap ExecutionBacktrace `fmap` getStackTrace
-collectBacktraces' IPEBacktraceMech = do
+
+collectExecutionStackBacktrace :: IO (Maybe Backtrace)
+collectExecutionStackBacktrace = fmap ExecutionBacktrace `fmap` getStackTrace
+
+collectIPEBacktrace :: IO (Maybe Backtrace)
+collectIPEBacktrace = do
   stack <- cloneMyStack
   stackEntries <- decode stack
   pure $ Just $ IPEBacktrace stackEntries
-collectBacktraces' HasCallStackBacktraceMech = pure . Just $ HasCallStackBacktrace callStack
+
+collectHasCallStackBacktrace :: HasCallStack => IO (Maybe Backtrace)
+collectHasCallStackBacktrace = pure . Just $ HasCallStackBacktrace callStack

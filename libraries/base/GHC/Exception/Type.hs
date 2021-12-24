@@ -40,7 +40,7 @@ import {-# SOURCE #-} Debug.Trace
 {- |
 The @SomeExceptionWithLocation@ type is the root of the exception type hierarchy.
 When an exception of type @e@ is thrown, behind the scenes it is
-encapsulated in a @SomeExceptionWithLocation@.
+encapsulated in a @SomeException@ with is wrapped by @SomeExceptionWithLocation@.
 -}
 data SomeExceptionWithLocation = SomeExceptionWithLocation !SomeException ![Backtrace]
 

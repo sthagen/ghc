@@ -39,7 +39,11 @@ module GHC.IO (
         MaskingState(..), getMaskingState,
         unsafeUnmask, interruptible,
         onException, bracket, finally, evaluate,
-        throwIOUserError
+        throwIOUserError,
+        throwIOWithCallStack,
+        throwIOWithBacktraceMechanism,
+        throwIOWithIPEStack,
+        throwIOWithCostCenterStack
     ) where
 
 import GHC.Base
@@ -50,7 +54,12 @@ import GHC.IO.Unsafe
 import Unsafe.Coerce ( unsafeCoerce )
 
 import {-# SOURCE #-} GHC.IO.Exception ( userError, IOError )
-import GHC.Exception.Backtrace ( collectBacktraces )
+import GHC.Exception.Backtrace ( Backtrace
+                                , collectBacktraces
+                                , collectHasCallStackBacktrace
+                                , collectIPEBacktrace
+                                , collectCostCenterBacktrace
+                                , collectExecutionStackBacktrace )
 import {-# SOURCE #-} GHC.Stack ( HasCallStack )
 
 -- ---------------------------------------------------------------------------
@@ -224,10 +233,41 @@ throwIO e =
     let
       -- TODO: Bangs should probably be moved to the data type (but then break024 and T14690 fail -
       -- How do these bangs differ from bangs in the data type constructor?)
-      !bts = unsafePerformIO $ collectBacktraces
+      !bts = unsafePerformIO collectBacktraces
       !e' = foldr addBacktrace (toException e) bts
     in
       IO(raiseIO# e')
+
+throwIOWithCallStack :: (HasCallStack, Exception e) => e -> IO a
+throwIOWithCallStack e = let
+      -- TODO: Bangs should probably be moved to the data type (but then break024 and T14690 fail -
+      -- How do these bangs differ from bangs in the data type constructor?)
+      !maybeBt = unsafePerformIO collectHasCallStackBacktrace
+      !e' = case maybeBt of
+              Just bt -> addBacktrace bt $ toException e
+              Nothing -> toException e
+    in
+      IO(raiseIO# e')
+
+throwIOWithBacktraceMechanism :: Exception e => IO (Maybe Backtrace) -> e -> IO a
+throwIOWithBacktraceMechanism mech e = let
+      -- TODO: Bangs should probably be moved to the data type (but then break024 and T14690 fail -
+      -- How do these bangs differ from bangs in the data type constructor?)
+      !maybeBt = unsafePerformIO mech
+      !e' = case maybeBt of
+              Just bt -> addBacktrace bt $ toException e
+              Nothing -> toException e
+    in
+      IO(raiseIO# e')
+
+throwIOWithIPEStack :: Exception e => e -> IO a
+throwIOWithIPEStack = throwIOWithBacktraceMechanism collectIPEBacktrace
+
+throwIOWithCostCenterStack :: Exception e => e -> IO a
+throwIOWithCostCenterStack = throwIOWithBacktraceMechanism collectCostCenterBacktrace
+
+throwWithExecutionStack :: Exception e => e -> IO a
+throwWithExecutionStack = throwIOWithBacktraceMechanism collectExecutionStackBacktrace
 
 throwIOUserError :: String -> IO a
 throwIOUserError s = throwIO $ userError s

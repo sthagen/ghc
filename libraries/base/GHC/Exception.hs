@@ -33,6 +33,10 @@ module GHC.Exception
        , CallStack, fromCallSiteList, getCallStack, prettyCallStack
        , prettyCallStackLines, showCCSStack
        , SrcLoc(..), prettySrcLoc
+       , throwWithCallStack
+       , throwWithIPEStack
+       , throwWithCostCenterStack
+       , throwWithExecutionStack
        ) where
 
 import GHC.Base
@@ -41,7 +45,7 @@ import GHC.Stack.Types
 import GHC.OldList
 import GHC.Prim
 import GHC.IO.Unsafe
-import GHC.Exception.Backtrace (collectBacktraces)
+import GHC.Exception.Backtrace (collectBacktraces, collectHasCallStackBacktrace, collectIPEBacktrace, collectCostCenterBacktrace, collectExecutionStackBacktrace, Backtrace)
 import {-# SOURCE #-} GHC.Stack.CCS
 import GHC.Exception.Type
 
@@ -57,6 +61,40 @@ throw e = runRW# (\s0 ->
       (# _, bts #) ->
         let e' = foldr addBacktrace (toException e) bts
         in raise# e' )
+
+-- throwWithCallStack cannot call throwWithBacktraceMechanism because that would introduce unnecessary
+-- HasCallStack constraints (that would decrease performance).
+throwWithCallStack :: HasCallStack => forall (r :: RuntimeRep). forall (a :: TYPE r). forall e.
+         Exception e => e -> a
+throwWithCallStack e = runRW# (\s0 ->
+    case unIO collectHasCallStackBacktrace s0 of
+      (# _, maybeBt #) ->
+        let e' = case maybeBt of
+                  Just bt -> addBacktrace bt (toException e)
+                  Nothing -> toException e
+        in raise# e')
+
+throwWithBacktraceMechanism :: forall (r :: RuntimeRep). forall (a :: TYPE r). forall e.
+         Exception e => IO (Maybe Backtrace) -> e -> a
+throwWithBacktraceMechanism mech e = runRW# (\s0 ->
+    case unIO mech s0 of
+      (# _, maybeBt #) ->
+        let e' = case maybeBt of
+                  Just bt -> addBacktrace bt (toException e)
+                  Nothing -> toException e
+        in raise# e')
+
+throwWithIPEStack :: forall (r :: RuntimeRep). forall (a :: TYPE r). forall e.
+         Exception e => e -> a
+throwWithIPEStack = throwWithBacktraceMechanism collectIPEBacktrace
+
+throwWithCostCenterStack :: forall (r :: RuntimeRep). forall (a :: TYPE r). forall e.
+         Exception e => e -> a
+throwWithCostCenterStack = throwWithBacktraceMechanism collectCostCenterBacktrace
+
+throwWithExecutionStack :: forall (r :: RuntimeRep). forall (a :: TYPE r). forall e.
+         Exception e => e -> a
+throwWithExecutionStack = throwWithBacktraceMechanism collectExecutionStackBacktrace
 
 -- | This is thrown when the user calls 'error'. The first @String@ is the
 -- argument given to 'error', second @String@ is the location.
