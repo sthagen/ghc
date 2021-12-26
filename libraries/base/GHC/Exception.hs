@@ -56,11 +56,17 @@ import GHC.Exception.Type
 -- stays exception-free.
 throw :: HasCallStack => forall (r :: RuntimeRep). forall (a :: TYPE r). forall e.
          Exception e => e -> a
-throw e = runRW# (\s0 ->
-    case unIO collectBacktraces s0 of
-      (# _, bts #) ->
-        let e' = foldr addBacktrace (toException e) bts
-        in raise# e' )
+throw e =
+  runRW#
+    ( \s0 ->
+        let e'@(SomeExceptionWithLocation _ bts) = toException e
+         in if null bts
+              then case unIO collectBacktraces s0 of
+                (# _, bts' #) ->
+                  let e'' = foldr addBacktrace e' bts'
+                   in raise# e''
+              else raise# e'
+    )
 
 -- throwWithCallStack cannot call throwWithBacktraceMechanism because that would introduce unnecessary
 -- HasCallStack constraints (that would decrease performance).

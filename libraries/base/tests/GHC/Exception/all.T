@@ -1,5 +1,5 @@
 test('throw', [only_ways(prof_ways)], compile_and_run, ['-finfo-table-map -prof'])
-# test('throw_rethrowException', normal, compile_and_run, [''])
+test('throw_rethrowException', normal, compile_and_run, [''])
 test('SomeExceptionWithLocationType', normal, compile_and_run, [''])
 test('throwWithCallStack', normal, compile_and_run, [''])
 test('throwWithCostCenterStack', [only_ways(prof_ways)], compile_and_run, ['-prof'])
