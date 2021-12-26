@@ -6,7 +6,7 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE TupleSections #-}
 
--- | Adds cost-centers after the core piple has run.
+-- | Adds cost-centers after the core pipeline has run.
 module GHC.Core.LateCC
     ( addLateCostCentres
     ) where
