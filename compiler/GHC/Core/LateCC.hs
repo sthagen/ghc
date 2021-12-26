@@ -61,7 +61,7 @@ doBndr env bndr rhs = do
         name_loc = nameSrcSpan name
         cc_name = getOccFS name
         count = gopt Opt_ProfCountEntries (dflags env)
-    cc_flavour <- (getCCExprFlavour cc_name) -- (ccState env)
+    cc_flavour <- (getCCExprFlavour cc_name) 
     let cc_mod = thisModule env
         bndrCC = NormalCC cc_flavour cc_name cc_mod name_loc
         note = ProfNote bndrCC count True
