@@ -43,8 +43,7 @@ module GHC.IO.Exception (
   userError,
   assertError,
   unsupportedOperation,
-  untangle,
-  traceException
+  untangle
  ) where
 
 import GHC.Base

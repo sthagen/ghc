@@ -11,16 +11,16 @@ main = do
 
   setAndExpectDefaultBacktraceMechanisms [CostCenterBacktraceMech]
 
-  setAndExpectDefaultBacktraceMechanisms [ExecutionStackBacktraceMech (Just 42)]
+  setAndExpectDefaultBacktraceMechanisms [ExecutionStackBacktraceMech]
 
   setAndExpectDefaultBacktraceMechanisms
     [ CostCenterBacktraceMech,
-      ExecutionStackBacktraceMech (Just 42)
+      ExecutionStackBacktraceMech
     ]
 
   setAndExpectDefaultBacktraceMechanisms
     [ CostCenterBacktraceMech,
-      ExecutionStackBacktraceMech (Just 42),
+      ExecutionStackBacktraceMech,
       HasCallStackBacktraceMech,
       IPEBacktraceMech
     ]

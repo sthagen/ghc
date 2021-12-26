@@ -24,7 +24,6 @@ module GHC.Exception.Type
         , addBacktrace
        , divZeroException, overflowException, ratioZeroDenomException
        , underflowException
-       , traceException
        ) where
 
 import Data.Maybe
@@ -33,9 +32,6 @@ import Data.Typeable (Typeable, cast)
 import GHC.Base
 import GHC.Show
 import GHC.Exception.Backtrace (Backtrace)
-
--- TODO: Remove!
-import {-# SOURCE #-} Debug.Trace
 
 {- |
 The @SomeExceptionWithLocation@ type is the root of the exception type hierarchy.
@@ -46,14 +42,15 @@ data SomeExceptionWithLocation = SomeExceptionWithLocation !SomeException ![Back
 
 data SomeException = forall e . Exception e => SomeException !e
 
--- | @since 3.0
+-- @since 4.16.0.0
 instance Show SomeExceptionWithLocation where
-    -- TODO: Print backtraces
+    -- | Just delegate to the wrapped 'Exception' @e@.
     showsPrec p (SomeExceptionWithLocation (SomeException e) _) = showsPrec p e
 
+-- | @since 3.0
 instance Show SomeException where
-    -- TODO: Fix show
-    showsPrec p (SomeException e) = showsPrec p e
+   -- | Just delegate to the wrapped 'Exception' @e@.
+   showsPrec p (SomeException e) = showsPrec p e
 
 -- | Add a 'Backtrace' to the list of backtraces.
 --
@@ -163,22 +160,14 @@ class (Typeable e, Show e) => Exception e where
     displayException :: e -> String
     displayException = show
 
-    toString :: e -> String
-    toString e = show e
-
 instance Exception SomeException where
   toException e = SomeExceptionWithLocation e []
   fromException (SomeExceptionWithLocation e _) = Just e
-  toString (SomeException e) = "SomeException " ++ toString e
 
 instance Exception SomeExceptionWithLocation where
     toException se = se
     fromException = Just
     displayException (SomeExceptionWithLocation e _) = displayException e
-    toString (SomeExceptionWithLocation e _) = "SomeExceptionWithLocation " ++ toString e
-
-traceException :: Exception e => e -> e
-traceException e = trace (toString e) e
 
 -- |Arithmetic exceptions.
 data ArithException

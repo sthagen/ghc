@@ -18,4 +18,6 @@ currentCallStack :: IO [String]
 
 getCurrentCCS :: dummy -> IO (Ptr CostCentreStack)
 
+ccsToStrings :: Ptr CostCentreStack -> IO [String]
+
 data CostCentreStack

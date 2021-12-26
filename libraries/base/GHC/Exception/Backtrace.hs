@@ -1,6 +1,7 @@
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE Trustworthy #-}
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_HADDOCK not-home #-}
 
 -----------------------------------------------------------------------------
@@ -50,7 +51,7 @@ import {-# SOURCE #-} GHC.Stack.CloneStack (cloneMyStack, decode)
 -- @since 4.15
 data Backtrace
   = -- | a cost center profiler backtrace
-    CostCenterBacktrace (Ptr GHC.Stack.CCS.CostCentreStack)
+    CostCenterBacktrace [String]
   | -- | a stack from 'GHC.Stack.HasCallStack'
     HasCallStackBacktrace GHC.Stack.CallStack
   | -- | a stack unwinding (e.g. DWARF) backtrace
@@ -71,10 +72,10 @@ data BacktraceMechanism
   = -- | collect a cost center stacktrace (only available when built with profiling)
     CostCenterBacktraceMech
   | -- | use execution stack unwinding with given limit
-    ExecutionStackBacktraceMech (Maybe Int)
+    ExecutionStackBacktraceMech
   | -- | collect backtraces from Info Table Provenance Entries
     IPEBacktraceMech
-  |
+  | -- | use 'HasCallStack'
    HasCallStackBacktraceMech
   deriving (Eq, Show)
 
@@ -95,23 +96,26 @@ getDefaultBacktraceMechanisms = readIORef currentBacktraceMechanisms
 
 -- | Collect a list of 'Backtrace' via all current default 'BacktraceMechanism'.
 -- See 'setDefaultBacktraceMechanisms'
-collectBacktraces ::  HasCallStack =>IO [Backtrace]
+collectBacktraces :: HasCallStack =>IO [Backtrace]
 collectBacktraces = do
-    mech <- getDefaultBacktraceMechanisms
-    catMaybes `fmap` mapM collectBacktraces' mech
+    mechs <- getDefaultBacktraceMechanisms
+    catMaybes `fmap` mapM collectBacktraces' mechs
   where
     -- | Collect a 'Backtrace' via the given 'BacktraceMechanism'.
-    collectBacktraces' ::  HasCallStack => BacktraceMechanism -> IO (Maybe Backtrace)
+    collectBacktraces' :: HasCallStack => BacktraceMechanism -> IO (Maybe Backtrace)
     collectBacktraces' CostCenterBacktraceMech = collectCostCenterBacktrace
-    -- TODO: Use depth
-    collectBacktraces' (ExecutionStackBacktraceMech _) = collectExecutionStackBacktrace
+    collectBacktraces' ExecutionStackBacktraceMech = collectExecutionStackBacktrace
     collectBacktraces' IPEBacktraceMech = collectIPEBacktrace
     collectBacktraces' HasCallStackBacktraceMech = collectHasCallStackBacktrace
 
 collectCostCenterBacktrace :: IO (Maybe Backtrace)
 collectCostCenterBacktrace = do
   ptr <- getCurrentCCS ()
-  pure $ if ptr == nullPtr then Nothing else Just (CostCenterBacktrace ptr)
+  if ptr == nullPtr then
+    pure Nothing
+  else do
+    bts <- ccsToStrings ptr
+    pure $ Just (CostCenterBacktrace bts)
 
 collectExecutionStackBacktrace :: IO (Maybe Backtrace)
 collectExecutionStackBacktrace = fmap ExecutionBacktrace `fmap` getStackTrace
