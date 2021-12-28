@@ -291,32 +291,23 @@ zipLMatchPats
      , Type )                    -- Remainder of the type signature
 zipLMatchPats fun_ty matchpats = zip_matchpats [] emptyTCvSubst fun_ty matchpats
   where
-    finalise acc matchpats subst ty = (reverse acc, matchpats, substTy subst ty)
+    finalise acc pats subst ty = (reverse acc, pats, substTy subst ty)
     zip_matchpats acc subst ty matchpats
-      | Just (b,ty') <- tcSplitPiTy_maybe ty
+      | (pat : pats) <- matchpats
+      , Just (b,ty') <- tcSplitPiTy_maybe ty
       , let (subst', tb') = substTyCoBndr subst b
       = if isInvisibleBinder b
            then
-             case matchpats of
-               [] -> finalise acc matchpats subst' ty
-               pat@(L _ (InvisTyVarPat _ _)) : matchpats' -> zip_matchpats ((tb', Just pat) : acc) subst' ty' matchpats'
-               pat@(L _ (InvisWildTyPat _ )) : matchpats' -> zip_matchpats ((tb', Just pat) : acc) subst' ty' matchpats'
-               L _ (VisPat _ _)              : matchpats' -> zip_matchpats ((tb', Nothing) : acc) subst' ty' matchpats'
-               L _ (XMatchPat x)             : _          -> dataConCantHappen x
+             case pat of
+               pat'@(L _ (InvisTyVarPat _ _)) -> zip_matchpats ((tb', Just pat') : acc) subst' ty' pats
+               pat'@(L _ (InvisWildTyPat _ )) -> zip_matchpats ((tb', Just pat') : acc) subst' ty' pats
+               _                              -> zip_matchpats ((tb', Nothing) : acc) subst' ty' matchpats
            else
-             case matchpats of
-               [] -> finalise acc matchpats subst' ty
-               pat@(L _ (VisPat _ _))        : matchpats' -> zip_matchpats ((tb', Just pat) : acc) subst' ty' matchpats'
-               L _ (InvisTyVarPat _ _)       : matchpats' -> zip_matchpats ((tb', Nothing) : acc) subst' ty' matchpats'
-               L _ (InvisWildTyPat _ )       : matchpats' -> zip_matchpats ((tb', Nothing) : acc) subst' ty' matchpats'
-               L _ (XMatchPat x)             : _          -> dataConCantHappen x
-      | let (all_forall_args, _) = splitForAllTyVars fun_ty
-      , let n_forall_args = length all_forall_args
-      , let all_invis_pats = length (discardLVisPats matchpats)
-      , all_invis_pats > n_forall_args
-      = panic "too many invisible arguments"
+             case pat of
+               pat'@(L _ (VisPat _ _)) -> zip_matchpats ((tb', Just pat') : acc) subst' ty' pats
+               _                       -> zip_matchpats ((tb', Nothing) : acc) subst' ty' matchpats
       | otherwise
-      = (reverse acc, matchpats, substTy subst ty)
+      = finalise acc matchpats subst ty
 
 -- Use this one when you have an "expected" type.
 -- This function skolemises at each polytype.
@@ -335,6 +326,31 @@ matchExpectedFunTys herald ctx lmatchpats orig_ty thing_inside
       Check ty -> go [] lmatchpats ty
       _        -> defer [] lmatchpats orig_ty
   where
+    go bndrs matchpats@(_:pats) ty
+      | (zipped_binders@(pair : _),_,_) <- zipLMatchPats ty matchpats
+      , Just (_,ty') <- tcSplitFunTy_maybe ty
+      = do { traceTc "zipped binders are" (ppr zipped_binders)
+           ; case (pair, ty) of
+               ((bndr@(Anon VisArg scaled_arg_ty), Just pat@(L _ (VisPat _ _))), FunTy { ft_af = VisArg, ft_res = res_ty }) -> do
+                 { (wrap_res, result) <- go (bndr : bndrs) pats res_ty
+                 ; traceTc "current vispat" (ppr pat)
+                 ; fun_wrap <- mkWpFun idHsWrapper wrap_res scaled_arg_ty res_ty (WpFunFunExpTy orig_ty)
+                                  -- ; let names = collectPatBinders CollNoDictBinders lpat
+                                  -- ; ids <- tcLookupLocalIds names
+                 ; return ( fun_wrap, result ) --; tcExtendIdEnv ids $ return ( fun_wrap, result )
+                 }
+               ((bndr@(Named (Bndr _ Specified)), Just pat@(L _ (InvisTyVarPat _ _))), ForAllTy (Bndr var Specified) ty') -> do
+                 { (wrap_res, result) <- go (bndr : bndrs) pats ty'
+                 ; traceTc "current invispat" (ppr pat)
+                 ; let wrap_gen = WpTyLam var
+                 ; return (wrap_gen <.> wrap_res, result) }
+               ((bndr@(Named (Bndr _ Specified)), Just (L _ (InvisWildTyPat _))), ForAllTy (Bndr var Specified) ty') -> do
+                 { (wrap_res, result) <- go (bndr : bndrs) pats ty'
+                 ; let wrap_gen = WpTyLam var
+                 ; return (wrap_gen <.> wrap_res, result) }
+               _ -> go (fst pair : bndrs) pats ty'
+            }
+{-
     go bndrs (pat@(L _ (VisPat _ _)):pats) (FunTy { ft_mult = mult, ft_af = VisArg, ft_arg = arg_ty, ft_res = res_ty })
       = do { (wrap_res, result) <- go (Anon VisArg scaled_arg_ty : bndrs) pats res_ty
            ; traceTc "matchExpectedFunTys: current visible pattern" (ppr pat)
@@ -342,7 +358,8 @@ matchExpectedFunTys herald ctx lmatchpats orig_ty thing_inside
            ; return ( fun_wrap, result ) }
       where
         scaled_arg_ty = mkScaled mult arg_ty
-
+-}
+{-
     go bndrs (pat@(L _ (InvisTyVarPat _ _)): pats) (ForAllTy bndr@(Bndr var Specified) ty')
       = do { (wrap_res, result) <- go (Named bndr : bndrs) pats ty'
            ; let wrap_gen = WpTyLam var
@@ -353,7 +370,7 @@ matchExpectedFunTys herald ctx lmatchpats orig_ty thing_inside
       = do { (wrap_res, result) <- go (Named bndr : bndrs) pats ty'
            ; let wrap_gen = WpTyLam var
            ; return (wrap_gen <.> wrap_res, result) }
-
+-}
     go vars pats ty
       | (tvs, theta, _) <- tcSplitSigmaTy ty
       , not (null theta && null tvs)
@@ -392,8 +409,8 @@ matchExpectedFunTys herald ctx lmatchpats orig_ty thing_inside
        --
        -- But in that case we add specialized type into error context
        -- anyway, because it may be useful. See also #9605.
-    go acc_arg_tys bndrs ty = addErrCtxtM (mk_ctxt ty) $
-                          defer acc_arg_tys bndrs (mkCheckExpType ty)
+    go bndrs lmatchpats ty = addErrCtxtM (mk_ctxt bndrs ty) $
+                          defer bndrs lmatchpats (mkCheckExpType ty)
 
     ------------
 
@@ -426,20 +443,14 @@ matchExpectedFunTys herald ctx lmatchpats orig_ty thing_inside
          }
 
     ------------
-    mk_ctxt :: TcType -> TidyEnv -> TcM (TidyEnv, SDoc)
-    mk_ctxt res_ty env
-      = do { let (bndrs_and_pats,_,_) = zipLMatchPats res_ty lmatchpats
-           ; traceTc "binders and patters" (ppr bndrs_and_pats)
-           ; bndrs' <- mapM zonkTyCoBinder (map fst bndrs_and_pats)
-           ; traceTc "matchExpectedFunTys" (ppr bndrs_and_pats)
-           ; mkPiTysMsg env herald (reverse bndrs') res_ty lmatchpats }
+    mk_ctxt :: [TyCoBinder] -> TcType -> TidyEnv -> TcM (TidyEnv, SDoc)
+    mk_ctxt bndrs res_ty env
+      = mkPiTysMsg env herald (reverse bndrs) res_ty lmatchpats
 
 mkPiTysMsg :: TidyEnv -> SDoc -> [TyCoBinder] -> TcType -> [LMatchPat GhcRn]
            -> TcM (TidyEnv, SDoc)
 mkPiTysMsg env herald bndrs res_ty lmatchpats
   = do { let fun = mkPiTys bndrs res_ty
-       ; let (bndrs_and_pats,_,_) = zipLMatchPats res_ty lmatchpats
-       ; traceTc "mkPiTysMsg: binders and patters" (ppr $ map fst bndrs_and_pats)
        ; (env', fun_ty) <- zonkTidyTcType env fun
        ; let (all_arg_tys, _) = splitFunTys fun_ty
              n_fun_args = length all_arg_tys
