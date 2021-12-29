@@ -78,6 +78,7 @@ import GHC.Types.SrcLoc
 
 import Control.Monad
 import Control.Arrow ( second )
+import GHC.Core.Type
 
 {-
 ************************************************************************
@@ -514,6 +515,8 @@ tcLcStmt m_tc ctxt (TransStmt { trS_form = form, trS_stmts = stmts
             <- tcStmtsAndThen (TransStmtCtxt ctxt) (tcLcStmt m_tc) stmts unused_ty $ \_ -> do
                { by' <- traverse tcInferRho by
                ; bndr_ids <- tcLookupLocalIds bndr_names
+               -- See #20864
+               ; _ <- mapM (\bid -> unifyKind Nothing (typeKind (idType bid)) liftedTypeKind) bndr_ids
                ; return (bndr_ids, by') }
 
        ; let m_app ty = mkTyConApp m_tc [ty]

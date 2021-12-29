@@ -1,0 +1,15 @@
+
+T20864.hs:17:33: error:
+    • Expecting a lifted type, but got an unlifted type
+    • In a stmt of a list comprehension: then take 3
+      In the expression: [I# (x +# y) | Foo x y <- xs, then take 3]
+      In an equation for ‘glum2’:
+          glum2 xs = [I# (x +# y) | Foo x y <- xs, then take 3]
+
+T20864.hs:20:22: error:
+    • Expecting a lifted type, but got an unlifted type
+    • In a stmt of a list comprehension: then take 3
+      In the expression:
+        [I# p | I# x <- xs, let p = x +# 3#, then take 3]
+      In an equation for ‘glum’:
+          glum xs = [I# p | I# x <- xs, let p = x +# 3#, then take 3]
